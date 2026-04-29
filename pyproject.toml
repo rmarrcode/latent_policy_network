@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "latent-policy"
+version = "0.1.0"
+description = "Generated-weight reinforcement learning policies for rapidly switching opponents."
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "tqdm",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+public = [
+    "numpy<2",
+    "setuptools>=77,<82",
+    "gymnasium",
+    "gym==0.26.2",
+    "pettingzoo[classic]>=1.25.0",
+    "supersuit",
+    "mpe2",
+    "open_spiel",
+    "slimevolleygym",
+    "opencv-python<4.12",
+    "magent2",
+    "footsies-gym",
+    "overcooked_ai",
+]
+
+[project.scripts]
+latent-policy-train = "latent_policy.ppo:main"
+latent-policy-eval = "latent_policy.evaluate:main"
+latent-policy-sweep = "latent_policy.sweep:main"
+latent-policy-report = "latent_policy.analyze:main"
+latent-policy-public-suite = "latent_policy.public_suite:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["latent_policy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

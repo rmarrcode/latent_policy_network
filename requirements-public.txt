@@ -1,0 +1,14 @@
+-r requirements.txt
+numpy<2
+setuptools>=77,<82
+gymnasium
+gym==0.26.2
+pettingzoo[classic]>=1.25.0
+supersuit
+mpe2
+open_spiel
+slimevolleygym
+opencv-python<4.12
+magent2
+footsies-gym
+overcooked_ai

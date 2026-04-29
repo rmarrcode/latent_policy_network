@@ -1,0 +1,37 @@
+seed: 1
+device: auto
+run_dir: runs
+total_updates: 12
+num_steps: 64
+learning_rate: 0.0003
+anneal_lr: true
+gamma: 0.96
+gae_lambda: 0.92
+num_minibatches: 4
+update_epochs: 3
+ent_coef: 0.02
+vf_coef: 0.5
+target_kl: 0.05
+eval_interval: 4
+eval_episodes: 32
+save_interval: 12
+torch_threads: 4
+progress: true
+
+env:
+  num_envs: 32
+  n_actions: 5
+  episode_length: 96
+  switch_hazard: 0.045
+  min_switch_interval: 8
+  opponent_noise: 0.14
+  count_decay: 0.92
+
+policy:
+  agent: hyper_head
+  encoder: gru
+  context_len: 16
+  hidden_dim: 64
+  latent_dim: 64
+  generated_hidden_dim: 24
+  weight_scale: 0.8
