@@ -39,6 +39,17 @@ PUBLIC_SPECS: dict[str, PublicSpec] = {
     "mpe_simple_tag": PublicSpec("mpe_simple_tag", "pettingzoo_parallel", "mpe2.simple_tag_v3:parallel_env", train_agent="adversary_0", num_envs=8),
     "mpe_simple_world_comm": PublicSpec("mpe_simple_world_comm", "pettingzoo_parallel", "mpe2.simple_world_comm_v3:parallel_env", train_agent="adversary_0", num_envs=6, episode_length=96, max_cycles=96),
     "slime_volley": PublicSpec("slime_volley", "gym_single", "SlimeVolley-v0", num_envs=8, episode_length=300, max_cycles=300),
+    "melee_light_knockback": PublicSpec(
+        "melee_light_knockback",
+        "gym_single",
+        "melee_light_knockback",
+        num_envs=1,
+        episode_length=60,
+        max_cycles=60,
+        hidden_dim=32,
+        latent_dim=32,
+        env_kwargs={"frame_skip": 4, "max_episode_frames": 240, "opponent_level": 3},
+    ),
     "footsies": PublicSpec("footsies", "gym_single", "footsies", num_envs=2, episode_length=300, max_cycles=300, hidden_dim=32, latent_dim=32),
     "magent_battle": PublicSpec("magent_battle", "pettingzoo_parallel", "magent2.environments.battle_v4:parallel_env", train_agent="red_0", num_envs=2, episode_length=32, max_cycles=32, hidden_dim=32, latent_dim=32, generated_hidden_dim=8),
 }

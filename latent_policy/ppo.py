@@ -56,6 +56,7 @@ class TrainConfig:
     target_kl: float | None = 0.04
     eval_interval: int = 10
     eval_episodes: int = 64
+    eval_deterministic: bool = True
     save_interval: int = 25
     torch_threads: int = 4
     progress: bool = True
@@ -329,7 +330,7 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
                 context_len=cfg.policy.context_len,
                 device=device,
                 episodes=cfg.eval_episodes,
-                deterministic=True,
+                deterministic=cfg.eval_deterministic,
             )
             metrics.update(eval_metrics)
 

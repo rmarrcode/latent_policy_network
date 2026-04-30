@@ -53,8 +53,8 @@ def evaluate_policy_in_env(
     episode_returns: list[float] = []
     episode_lengths: list[int] = []
     rewards_by_age = {"age_0_3": [], "age_4_15": [], "age_16_plus": []}
-    wins = 0
-    reward_count = 0
+    positive_reward_steps = 0
+    reward_steps = 0
     switches = 0
     episode_length = int(getattr(env.cfg, "episode_length", 128))
     max_steps = max(episodes * episode_length * 2, episode_length)
@@ -64,8 +64,8 @@ def evaluate_policy_in_env(
     while len(episode_returns) < episodes and steps < max_steps:
         action = policy.act(obs, context, deterministic=deterministic)
         next_obs_np, rewards_np, done_np, info = env.step(action.cpu().numpy())
-        reward_count += rewards_np.size
-        wins += int(np.sum(rewards_np > 0.0))
+        reward_steps += rewards_np.size
+        positive_reward_steps += int(np.sum(rewards_np > 0.0))
         switches += int(np.sum(info["switched"]))
         ages = info["opponent_age"]
         rewards_by_age["age_0_3"].extend(rewards_np[ages <= 3].tolist())
@@ -82,6 +82,10 @@ def evaluate_policy_in_env(
         context = append_context(context, obs, done)
         steps += 1
 
+    episode_wins = int(np.sum(np.asarray(episode_returns, dtype=np.float32) > 0.0))
+    episode_losses = int(np.sum(np.asarray(episode_returns, dtype=np.float32) < 0.0))
+    episode_draws = len(episode_returns) - episode_wins - episode_losses
+    episode_count = max(1, len(episode_returns))
     means = {
         f"eval_reward_{name}": float(np.mean(values)) if values else float("nan")
         for name, values in rewards_by_age.items()
@@ -92,7 +96,10 @@ def evaluate_policy_in_env(
             "eval_return_mean": float(np.mean(episode_returns)) if episode_returns else float("nan"),
             "eval_return_std": float(np.std(episode_returns)) if episode_returns else float("nan"),
             "eval_length_mean": float(np.mean(episode_lengths)) if episode_lengths else float("nan"),
-            "eval_win_rate": wins / max(1, reward_count),
+            "eval_win_rate": episode_wins / episode_count,
+            "eval_loss_rate": episode_losses / episode_count,
+            "eval_draw_rate": episode_draws / episode_count,
+            "eval_positive_step_rate": positive_reward_steps / max(1, reward_steps),
             "eval_switches": switches,
         }
     )

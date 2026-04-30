@@ -255,7 +255,7 @@ class OpenSpielMatrixVecEnv(BasePublicVecEnv):
         self._record_actions(actions, opp_actions)
         self.last_agent_action = actions.copy()
         self.last_opp_action = opp_actions
-        self.last_reward = rewards
+        self.last_reward = rewards.copy()
         self.step_count += 1
         self.steps_since_switch += 1
         self.episode_return += rewards
@@ -355,7 +355,7 @@ class OpenSpielTurnBasedVecEnv(BasePublicVecEnv):
             done[env_id] = self.states[env_id].is_terminal()
 
         self._record_actions(agent_actions_taken, opp_actions_taken)
-        self.last_reward = rewards
+        self.last_reward = rewards.copy()
         self.step_count += 1
         self.steps_since_switch += 1
         self.episode_return += rewards
@@ -538,7 +538,7 @@ class PettingZooParallelDiscreteVecEnv(BasePublicVecEnv):
                 self._last_obs[env_id] = _flatten_obs(obs[train_agent], env.observation_space(train_agent))
 
         self._record_actions(actions, opp_actions)
-        self.last_reward = rewards
+        self.last_reward = rewards.copy()
         self.step_count += 1
         self.steps_since_switch += 1
         self.episode_return += rewards
@@ -598,6 +598,13 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
             import slimevolleygym  # noqa: F401
 
             return gym.make(self.cfg.name, **self.cfg.env_kwargs)
+        if self.cfg.name == "melee_light_knockback":
+            from latent_policy.melee_light_env import MeleeLightKnockbackEnv
+
+            env_kwargs = dict(self.cfg.env_kwargs)
+            frame_skip = int(env_kwargs.get("frame_skip", 4))
+            env_kwargs.setdefault("max_episode_frames", self.cfg.episode_length * max(1, frame_skip))
+            return MeleeLightKnockbackEnv(**env_kwargs)
         if self.cfg.name == "footsies":
             import footsiesgym
 
@@ -692,7 +699,7 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
                 self._last_obs[env_id] = _flatten_obs(obs)
 
         self._record_actions(actions, opp_actions)
-        self.last_reward = rewards
+        self.last_reward = rewards.copy()
         self.step_count += 1
         self.steps_since_switch += 1
         self.episode_return += rewards

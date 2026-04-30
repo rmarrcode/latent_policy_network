@@ -1,0 +1,22 @@
+[
+  {"name": "idle"},
+  {"name": "left", "lsX": -1.0},
+  {"name": "right", "lsX": 1.0},
+  {"name": "up", "lsY": 1.0},
+  {"name": "down", "lsY": -1.0},
+  {"name": "jump", "x": true},
+  {"name": "shield", "l": true, "lA": 1.0},
+  {"name": "jab", "a": true},
+  {"name": "tilt_up", "a": true, "lsY": 0.6},
+  {"name": "tilt_down", "a": true, "lsY": -0.6},
+  {"name": "tilt_left", "a": true, "lsX": -0.6},
+  {"name": "tilt_right", "a": true, "lsX": 0.6},
+  {"name": "smash_up", "csY": 1.0},
+  {"name": "smash_down", "csY": -1.0},
+  {"name": "smash_left", "csX": -1.0},
+  {"name": "smash_right", "csX": 1.0},
+  {"name": "special_n", "b": true},
+  {"name": "special_up", "b": true, "lsY": 1.0},
+  {"name": "special_left", "b": true, "lsX": -1.0},
+  {"name": "special_right", "b": true, "lsX": 1.0}
+]

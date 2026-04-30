@@ -23,6 +23,7 @@ public = [
     "setuptools>=77,<82",
     "gymnasium",
     "gym==0.26.2",
+    "selenium>=4.20",
     "pettingzoo[classic]>=1.25.0",
     "supersuit",
     "mpe2",
@@ -44,6 +45,9 @@ latent-policy-public-suite = "latent_policy.public_suite:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["latent_policy*"]
+
+[tool.setuptools.package-data]
+latent_policy = ["melee_light_runtime/*.js", "melee_light_runtime/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
