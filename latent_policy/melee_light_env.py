@@ -19,7 +19,7 @@ MELEE_LIGHT_REPO_URL = "https://github.com/Saber0Github/smashmelee.git"
 NODE_VERSION = "v16.20.2"
 NODE_DIST = f"node-{NODE_VERSION}-linux-x64"
 NODE_TARBALL_URL = f"https://nodejs.org/dist/{NODE_VERSION}/{NODE_DIST}.tar.xz"
-RUNTIME_PATCH_VERSION = "melee-light-knockback-v5"
+RUNTIME_PATCH_VERSION = "melee-light-knockback-v8"
 OBS_DIM = 30
 _RUNTIME_LOCK = threading.Lock()
 
@@ -289,7 +289,7 @@ class MeleeLightKnockbackEnv:
         stage: int = 0,
         opponent_level: int = 4,
         close_spawn: bool = True,
-        spawn_spacing: float = 12.0,
+        spawn_spacing: float = 48.0,
         spawn_y: float = 0.0,
         headless: bool = True,
         chrome_binary: str | None = None,

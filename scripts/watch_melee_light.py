@@ -25,6 +25,7 @@ CHARACTER_IDS = {
     "falco": 3,
     "falcon": 4,
 }
+CHARACTER_NAMES = {value: key.title() for key, value in CHARACTER_IDS.items()}
 DEFAULT_CHECKPOINT = Path("runs/melee_light_reward_signal_gpu/full_hyper_lvl0_post_reward_fix/checkpoint.pt")
 DEFAULT_OUTPUT = Path("runs/melee_light_viewer/fox_vs_baseline_marth.gif")
 
@@ -34,6 +35,10 @@ def _character_id(value: str) -> int:
     if lowered in CHARACTER_IDS:
         return CHARACTER_IDS[lowered]
     return int(value)
+
+
+def _character_name(value: int) -> str:
+    return CHARACTER_NAMES.get(int(value), f"Character {int(value)}")
 
 
 def _policy_obs(
@@ -90,6 +95,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--deterministic", action="store_true", help="Use argmax actions instead of sampling.")
     parser.add_argument("--show", action="store_true", help="Open a visible Chromium window while recording.")
+    parser.add_argument(
+        "--hold-open-seconds",
+        type=float,
+        default=None,
+        help="Keep the browser open after playback. Defaults to 30 seconds with --show and 0 otherwise.",
+    )
     parser.add_argument("--fps", type=float, default=10.0)
     parser.add_argument("--final-hold-ms", type=int, default=900)
     parser.add_argument("--agent-character", type=_character_id, default=CHARACTER_IDS["fox"])
@@ -97,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--opponent-level", type=int, default=3)
     parser.add_argument("--frame-skip", type=int, default=4)
     parser.add_argument("--max-episode-frames", type=int, default=240)
-    parser.add_argument("--spawn-spacing", type=float, default=12.0)
+    parser.add_argument("--spawn-spacing", type=float, default=48.0)
     parser.add_argument("--spawn-y", type=float, default=0.0)
     return parser.parse_args()
 
@@ -112,6 +123,12 @@ def main() -> None:
     policy.to(device)
     policy.eval()
     action_specs = load_melee_light_action_specs()
+    agent_name = _character_name(args.agent_character)
+    opponent_name = _character_name(args.opponent_character)
+    matchup_label = (
+        f"P1/red latent network {agent_name} vs "
+        f"P2/green baseline CPU {opponent_name} lvl {args.opponent_level}"
+    )
 
     env = MeleeLightKnockbackEnv(
         frame_skip=args.frame_skip,
@@ -131,13 +148,14 @@ def main() -> None:
     step_duration_ms = max(1, int(1000 / max(args.fps, 0.1)))
     episode_length = max(1, int(np.ceil(args.max_episode_frames / max(1, args.frame_skip))))
 
+    hold_open_seconds = 30.0 if args.hold_open_seconds is None and args.show else float(args.hold_open_seconds or 0.0)
     try:
         for episode in range(args.episodes):
             raw_obs, _ = env.reset(seed=args.seed + episode)
             obs_np = _policy_obs(raw_obs, 0.0, 0, episode_length, policy_cfg.obs_dim)
             obs = torch.as_tensor(obs_np[None, :], dtype=torch.float32, device=device)
             context = torch.zeros((1, policy_cfg.context_len, policy_cfg.obs_dim), dtype=torch.float32, device=device)
-            frames.append(_screenshot(env, f"episode {episode + 1}: latent Fox vs baseline Marth"))
+            frames.append(_screenshot(env, f"episode {episode + 1}: {matchup_label}"))
             durations.append(350)
 
             total_reward = 0.0
@@ -149,7 +167,7 @@ def main() -> None:
                 total_reward += float(reward)
                 action_name = action_specs[action]["name"] if 0 <= action < len(action_specs) else str(action)
                 label = (
-                    f"ep {episode + 1} step {step + 1}: Fox {action_name} | "
+                    f"ep {episode + 1} step {step + 1}: P1 latent {agent_name} {action_name} | "
                     f"reward {reward:+.1f} | frame {info.get('frame_count', '?')}"
                 )
                 frames.append(_screenshot(env, label))
@@ -187,6 +205,9 @@ def main() -> None:
                         flush=True,
                     )
                     break
+        if hold_open_seconds > 0:
+            print({"holding_browser_open_seconds": hold_open_seconds}, flush=True)
+            time.sleep(hold_open_seconds)
     finally:
         env.close()
 
@@ -202,6 +223,8 @@ def main() -> None:
                 "agent_character": args.agent_character,
                 "opponent_character": args.opponent_character,
                 "opponent_level": args.opponent_level,
+                "p1_role": f"latent network {agent_name}",
+                "p2_role": f"baseline CPU {opponent_name}",
                 "deterministic": args.deterministic,
                 "events": events,
             },

@@ -188,3 +188,133 @@ MAgent2 Battle:
 
 Tiny-budget returns: `static_mlp -1.360`, `hyper_head -2.248`,
 `full_hyper -0.010`. This validates the many-agent PettingZoo-style adapter.
+
+## 2026-04-30 Melee Light Training Pass
+
+Added dedicated configs:
+
+- `configs/melee_light_lvl0.yaml`
+- `configs/melee_light_lvl3.yaml`
+
+These use the built-in CPU opponent on the default Fox-vs-Marth setup with
+`frame_skip: 4`, `max_episode_frames: 240`, and 60-step training episodes.
+This is important context: unlike `SwitchingDuelVecEnv`, the current
+`melee_light_knockback` adapter is not a hidden-opponent-switching benchmark,
+so it is a much weaker test of the latent-policy idea.
+
+### Broad Sweep
+
+Training pattern:
+
+```bash
+for level in 0 3; do
+  for seed in 1 2; do
+    for agent in static_mlp hyper_head full_hyper film; do
+      encoder=gru
+      if [ "$agent" = "static_mlp" ]; then
+        encoder=mean
+      fi
+      ../.venv/bin/python -m latent_policy.ppo \
+        --config "configs/melee_light_lvl${level}.yaml" \
+        --agent "$agent" \
+        --encoder "$encoder" \
+        --seed "$seed" \
+        --total-updates 16 \
+        --run-dir runs/melee_light_apr30_train \
+        --run-name "melee_light_lvl${level}_${agent}_${encoder}_seed${seed}" \
+        --no-progress
+    done
+  done
+done
+```
+
+Deterministic evaluation: 32 episodes per checkpoint. Aggregated outputs:
+
+- `runs/melee_light_apr30_eval_lvl0.csv`
+- `runs/melee_light_apr30_eval_lvl3.csv`
+- `runs/melee_light_apr30_grouped.csv`
+
+Grouped means:
+
+| level | agent | encoder | eval return | win rate | loss rate | eval length |
+|---|---:|---:|---:|---:|---:|---:|
+| `0` | `film` | `gru` | `-1.000` | `0.000` | `1.000` | `59.875` |
+| `0` | `full_hyper` | `gru` | `-0.625` | `0.188` | `0.812` | `51.969` |
+| `0` | `hyper_head` | `gru` | `-1.000` | `0.000` | `1.000` | `59.922` |
+| `0` | `static_mlp` | `mean` | `-1.000` | `0.000` | `1.000` | `59.922` |
+| `3` | `film` | `gru` | `-0.344` | `0.328` | `0.672` | `18.156` |
+| `3` | `full_hyper` | `gru` | `-1.000` | `0.000` | `1.000` | `24.500` |
+| `3` | `hyper_head` | `gru` | `-1.000` | `0.000` | `1.000` | `35.922` |
+| `3` | `static_mlp` | `mean` | `-1.000` | `0.000` | `1.000` | `59.922` |
+
+The only non-trivial short-run positives were:
+
+- `full_hyper` at level `0`, seed `2`: return `-0.25`, win rate `0.375`
+- `film` at level `3`, seed `2`: return `0.3125`, win rate `0.65625`
+
+Those were enough to justify a longer follow-up, but not enough to claim a
+stable edge on their own because they came from single seeds out of 32 eval
+episodes.
+
+### Longer Follow-Up
+
+I extended the only two promising pairs:
+
+- level `0`: `static_mlp` vs `full_hyper`
+- level `3`: `static_mlp` vs `film`
+
+Training pattern:
+
+```bash
+../.venv/bin/python -m latent_policy.ppo \
+  --config configs/melee_light_lvl0.yaml \
+  --agent static_mlp --encoder mean --seed 1 --total-updates 32 \
+  --run-dir runs/melee_light_apr30_followup \
+  --run-name melee_light_lvl0_long_static_mlp_mean_seed1 --no-progress
+
+../.venv/bin/python -m latent_policy.ppo \
+  --config configs/melee_light_lvl0.yaml \
+  --agent full_hyper --encoder gru --seed 1 --total-updates 32 \
+  --run-dir runs/melee_light_apr30_followup \
+  --run-name melee_light_lvl0_long_full_hyper_gru_seed1 --no-progress
+
+../.venv/bin/python -m latent_policy.ppo \
+  --config configs/melee_light_lvl3.yaml \
+  --agent static_mlp --encoder mean --seed 1 --total-updates 32 \
+  --run-dir runs/melee_light_apr30_followup \
+  --run-name melee_light_lvl3_long_static_mlp_mean_seed1 --no-progress
+
+../.venv/bin/python -m latent_policy.ppo \
+  --config configs/melee_light_lvl3.yaml \
+  --agent film --encoder gru --seed 1 --total-updates 32 \
+  --run-dir runs/melee_light_apr30_followup \
+  --run-name melee_light_lvl3_long_film_gru_seed1 --no-progress
+```
+
+I repeated the same pattern for seed `2`, then evaluated each checkpoint over
+32 deterministic episodes. Aggregated outputs:
+
+- `runs/melee_light_apr30_followup_eval_lvl0.csv`
+- `runs/melee_light_apr30_followup_eval_lvl3.csv`
+
+Grouped means:
+
+| level | agent | encoder | eval return | win rate | loss rate | eval length |
+|---|---:|---:|---:|---:|---:|---:|
+| `0` | `full_hyper` | `gru` | `-1.000` | `0.000` | `1.000` | `59.688` |
+| `0` | `static_mlp` | `mean` | `-1.000` | `0.000` | `1.000` | `59.922` |
+| `3` | `film` | `gru` | `-1.000` | `0.000` | `1.000` | `41.625` |
+| `3` | `static_mlp` | `mean` | `-0.156` | `0.422` | `0.578` | `30.969` |
+
+### Melee Light Takeaway
+
+- I did not find a reliable Melee Light advantage for the latent-policy
+  architectures.
+- The broad sweep produced two isolated positive seeds, but neither survived the
+  longer 32-update follow-up.
+- In the longer level-`3` follow-up, the static MLP actually produced the best
+  single run: return `0.6875`, win rate `0.84375`.
+- The current Melee Light adapter appears to be a poor fit for the latent-policy
+  hypothesis because it uses a fixed built-in CPU opponent rather than the
+  hidden-opponent-switching structure that generated-weight adaptation is meant
+  to exploit.

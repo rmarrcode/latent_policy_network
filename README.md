@@ -95,6 +95,37 @@ The suite currently covers OpenSpiel matrix/turn games, PettingZoo RPS, MPE2
 tasks, SlimeVolley, MAgent2 Battle, and Footsies. Footsies is much slower
 because it launches headless game-server processes.
 
+## Melee Light
+
+I added dedicated Melee Light configs:
+
+- `configs/melee_light_lvl0.yaml`
+- `configs/melee_light_lvl3.yaml`
+
+These runs use the built-in CPU opponent on the default Fox-vs-Marth setup with
+`frame_skip: 4` and 60-step episodes. Unlike the synthetic switching-duel
+benchmark, this adapter does not currently create a hidden opponent-type switch
+inside the episode, so the adaptation signal is much weaker.
+
+I ran a broad 16-update sweep across `static_mlp`, `hyper_head`, `full_hyper`,
+and `film`, using two seeds and 32 deterministic eval episodes per checkpoint:
+
+| level | best agent | eval return | win rate |
+|---|---:|---:|---:|
+| `0` | `full_hyper` | `-0.625` | `0.188` |
+| `3` | `film` | `-0.344` | `0.328` |
+
+Those short-run positives did not hold up in a longer 32-update follow-up:
+
+| level | baseline | latent candidate |
+|---|---:|---:|
+| `0` | `static_mlp -1.000 / 0.000 win` | `full_hyper -1.000 / 0.000 win` |
+| `3` | `static_mlp -0.156 / 0.422 win` | `film -1.000 / 0.000 win` |
+
+Takeaway: I did not find a reliable Melee Light edge for the latent-policy
+architectures. The combined result files are `runs/melee_light_apr30_all_eval.csv`
+and `runs/melee_light_apr30_grouped.csv`.
+
 ## Current Local Results
 
 I ran a two-seed medium sweep with 40 updates per run. Mean eval return:

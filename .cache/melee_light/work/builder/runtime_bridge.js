@@ -28,6 +28,7 @@ import {
 import { debugNetworkInputs, resetNetworkInputs, setNetworkInput } from "main/multiplayer/streamclient";
 import { Box2D } from "main/util/Box2D";
 import { Vec2D } from "main/util/Vec2D";
+import { resetVfxQueue } from "main/vfx/vfxQueue";
 
 const OBS_DIM = 30;
 const ACTION_SPECS = Array.isArray(actionSpecs) ? actionSpecs : [];
@@ -39,7 +40,7 @@ const DEFAULT_CONFIG = {
   stage: 0,
   opponent_level: 4,
   close_spawn: true,
-  spawn_spacing: 12,
+  spawn_spacing: 48,
   spawn_y: 0,
 };
 
@@ -48,6 +49,24 @@ let logicFrameCount = 0;
 let episodeFrameCount = 0;
 let pendingOutcome = null;
 let envReady = false;
+
+function hideLoadScreen() {
+  const loadScreen = document.getElementById("loadScreen");
+  if (loadScreen) {
+    loadScreen.remove();
+  }
+}
+
+function hidePageChrome() {
+  ["topButtonContainer", "keyboardPrompt", "players", "debug", "buttons"].forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.style.display = "none";
+    }
+  });
+  document.body.style.margin = "0";
+  document.body.style.overflow = "hidden";
+}
 
 function baseInput() {
   return {
@@ -179,7 +198,7 @@ function applySpawnLayout() {
   if (!bridgeConfig.close_spawn) {
     return;
   }
-  const halfSpacing = Math.max(1, Number(bridgeConfig.spawn_spacing) || 12) / 2;
+  const halfSpacing = Math.max(1, Number(bridgeConfig.spawn_spacing) || DEFAULT_CONFIG.spawn_spacing) / 2;
   const y = Number.isFinite(Number(bridgeConfig.spawn_y)) ? Number(bridgeConfig.spawn_y) : 0;
   placePlayer(0, -halfSpacing, y, 1);
   placePlayer(1, halfSpacing, y, -1);
@@ -230,6 +249,7 @@ function beginMatch() {
   configureMatch();
   changeGamemode(2);
   startGame();
+  resetVfxQueue();
   applySpawnLayout();
   setStartTimer(0);
   setStarting(false);
@@ -307,6 +327,8 @@ function debugState() {
 }
 
 function reset(config) {
+  hideLoadScreen();
+  hidePageChrome();
   mergeConfig(config);
   beginMatch();
   return {
@@ -365,6 +387,8 @@ function asyncStep(action, callback) {
 }
 
 export function initMeleeLightKnockbackBridge() {
+  hideLoadScreen();
+  hidePageChrome();
   if (window.__latentPolicyMeleeTick === undefined) {
     window.__latentPolicyMeleeTick = function meleeLightEnvTick() {
       logicFrameCount += 1;

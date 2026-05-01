@@ -1,0 +1,43 @@
+seed: 1
+device: auto
+run_dir: runs/melee_light_lvl0
+total_updates: 16
+num_steps: 60
+learning_rate: 0.0003
+anneal_lr: true
+gamma: 0.96
+gae_lambda: 0.92
+num_minibatches: 4
+update_epochs: 3
+ent_coef: 0.015
+vf_coef: 0.5
+target_kl: 0.04
+eval_interval: 0
+eval_episodes: 32
+save_interval: 16
+torch_threads: 1
+progress: true
+
+policy:
+  agent: full_hyper
+  encoder: gru
+  context_len: 12
+  hidden_dim: 32
+  latent_dim: 32
+  generated_hidden_dim: 16
+  weight_scale: 0.8
+
+public_env:
+  kind: gym_single
+  name: melee_light_knockback
+  num_envs: 1
+  episode_length: 60
+  max_cycles: 60
+  switch_hazard: 0.05
+  min_switch_interval: 8
+  env_kwargs:
+    frame_skip: 4
+    max_episode_frames: 240
+    agent_character: 2
+    opponent_character: 0
+    opponent_level: 0

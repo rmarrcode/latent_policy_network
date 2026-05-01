@@ -75,6 +75,15 @@ def test_runtime_bridge_timeout_counts_as_loss():
     assert "timeout: true" in source
 
 
+def test_runtime_bridge_removes_loading_overlay():
+    bridge_path = Path(__file__).resolve().parents[1] / "latent_policy" / "melee_light_runtime" / "runtime_bridge.js"
+    source = bridge_path.read_text(encoding="utf-8")
+    assert 'document.getElementById("loadScreen")' in source
+    assert "loadScreen.remove()" in source
+    assert "hidePageChrome()" in source
+    assert "resetVfxQueue()" in source
+
+
 def test_gym_single_make_env_routes_to_melee_light(monkeypatch):
     melee_module = importlib.import_module("latent_policy.melee_light_env")
     captured: dict[str, object] = {}
