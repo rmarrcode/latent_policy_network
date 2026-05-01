@@ -1,0 +1,56 @@
+seed: 1
+device: cuda
+run_dir: runs/melee_light_gpu_elo_train
+total_updates: 120
+num_steps: 90
+learning_rate: 0.0003
+anneal_lr: true
+gamma: 0.96
+gae_lambda: 0.92
+num_minibatches: 6
+update_epochs: 4
+ent_coef: 0.015
+vf_coef: 0.5
+target_kl: 0.04
+eval_interval: 0
+eval_episodes: 64
+save_interval: 30
+keep_checkpoints: true
+torch_threads: 1
+progress: true
+
+policy:
+  agent: full_hyper
+  encoder: gru
+  context_len: 32
+  hidden_dim: 64
+  latent_dim: 64
+  generated_hidden_dim: 24
+  weight_scale: 0.8
+
+public_env:
+  kind: gym_single
+  name: melee_light_knockback
+  num_envs: 1
+  episode_length: 90
+  max_cycles: 90
+  switch_hazard: 0.08
+  min_switch_interval: 10
+  opponent_pool:
+    - rushdown
+    - approach_jab
+    - spacer
+    - zoner
+    - counter_poke
+    - jumper
+    - mirror_agent
+    - anti_frequency
+  env_kwargs:
+    frame_skip: 4
+    max_episode_frames: 360
+    agent_character: 2
+    opponent_character: 0
+    opponent_control: external
+    agent_character_pool: [0, 1, 2, 3, 4]
+    opponent_character_pool: [0, 1, 2, 3, 4]
+    opponent_level: 0

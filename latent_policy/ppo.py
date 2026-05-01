@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import copy
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -58,6 +59,7 @@ class TrainConfig:
     eval_episodes: int = 64
     eval_deterministic: bool = True
     save_interval: int = 25
+    keep_checkpoints: bool = False
     torch_threads: int = 4
     progress: bool = True
     env: SwitchingGameConfig = field(default_factory=SwitchingGameConfig)
@@ -154,6 +156,18 @@ def load_checkpoint(path: str | Path, device: torch.device) -> tuple[nn.Module, 
     return policy, cfg, policy_cfg, ckpt
 
 
+def sanitize_module_parameters(module: nn.Module) -> int:
+    repaired = 0
+    with torch.no_grad():
+        for param in module.parameters():
+            if torch.isfinite(param).all():
+                continue
+            clean = torch.nan_to_num(param.detach(), nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
+            param.copy_(clean)
+            repaired += 1
+    return repaired
+
+
 def train(cfg: TrainConfig) -> dict[str, Any]:
     set_seed(cfg.seed)
     torch.set_num_threads(max(1, cfg.torch_threads))
@@ -163,6 +177,12 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
     else:
         cfg.public_env.seed = cfg.seed
     env = make_env(cfg)
+
+    def _close_env() -> None:
+        if hasattr(env, "close"):
+            env.close()
+
+    atexit.register(_close_env)
     policy_cfg = make_policy_config(cfg, env)
     policy = build_policy(policy_cfg).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=cfg.learning_rate, eps=1e-5)
@@ -184,7 +204,12 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
     dones_buf = torch.zeros((cfg.num_steps, num_envs), device=device)
     values_buf = torch.zeros((cfg.num_steps, num_envs), device=device)
 
-    obs = torch.as_tensor(env.reset(), dtype=torch.float32, device=device)
+    obs = torch.nan_to_num(
+        torch.as_tensor(env.reset(), dtype=torch.float32, device=device),
+        nan=0.0,
+        posinf=1e6,
+        neginf=-1e6,
+    )
     context = torch.zeros((num_envs, cfg.policy.context_len, env.obs_dim), dtype=torch.float32, device=device)
     global_step = 0
     recent_returns: deque[float] = deque(maxlen=128)
@@ -213,7 +238,12 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
             values_buf[step] = value
 
             next_obs_np, reward_np, done_np, info = env.step(action.cpu().numpy())
-            rewards_buf[step] = torch.as_tensor(reward_np, dtype=torch.float32, device=device)
+            rewards_buf[step] = torch.nan_to_num(
+                torch.as_tensor(reward_np, dtype=torch.float32, device=device),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
             dones_buf[step] = torch.as_tensor(done_np.astype(np.float32), dtype=torch.float32, device=device)
 
             ages = info["opponent_age"]
@@ -225,12 +255,18 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
                 if np.isfinite(ret):
                     recent_returns.append(float(ret))
 
-            obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
+            obs = torch.nan_to_num(
+                torch.as_tensor(next_obs_np, dtype=torch.float32, device=device),
+                nan=0.0,
+                posinf=1e6,
+                neginf=-1e6,
+            )
             done = torch.as_tensor(done_np, dtype=torch.bool, device=device)
             context = append_context(context, obs, done)
 
         with torch.no_grad():
             _, _, _, next_value = policy.get_action_and_value(obs, context)
+            next_value = torch.nan_to_num(next_value, nan=0.0, posinf=1e6, neginf=-1e6)
 
         advantages = torch.zeros_like(rewards_buf, device=device)
         lastgaelam = torch.zeros(num_envs, device=device)
@@ -240,7 +276,9 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
             delta = rewards_buf[t] + cfg.gamma * next_values * next_nonterminal - values_buf[t]
             lastgaelam = delta + cfg.gamma * cfg.gae_lambda * next_nonterminal * lastgaelam
             advantages[t] = lastgaelam
+        advantages = torch.nan_to_num(advantages, nan=0.0, posinf=1e6, neginf=-1e6)
         returns = advantages + values_buf
+        returns = torch.nan_to_num(returns, nan=0.0, posinf=1e6, neginf=-1e6)
 
         b_obs = obs_buf.reshape((-1, env.obs_dim))
         b_ctx = ctx_buf.reshape((-1, cfg.policy.context_len, env.obs_dim))
@@ -252,6 +290,12 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
 
         clipfracs = []
         approx_kl_value = 0.0
+        skipped_minibatches = 0
+        repaired_parameter_tensors = 0
+        old_approx_kl = torch.zeros((), device=device)
+        pg_loss = torch.zeros((), device=device)
+        v_loss = torch.zeros((), device=device)
+        entropy_loss = torch.zeros((), device=device)
         for _ in range(cfg.update_epochs):
             np.random.shuffle(indices)
             for start in range(0, batch_size, minibatch_size):
@@ -291,10 +335,21 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - cfg.ent_coef * entropy_loss + cfg.vf_coef * v_loss
+                if not torch.isfinite(loss):
+                    skipped_minibatches += 1
+                    optimizer.zero_grad(set_to_none=True)
+                    repaired_parameter_tensors += sanitize_module_parameters(policy)
+                    continue
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
+                if not torch.isfinite(grad_norm):
+                    skipped_minibatches += 1
+                    optimizer.zero_grad(set_to_none=True)
+                    repaired_parameter_tensors += sanitize_module_parameters(policy)
+                    continue
                 optimizer.step()
+                repaired_parameter_tensors += sanitize_module_parameters(policy)
 
             if cfg.target_kl is not None and approx_kl_value > cfg.target_kl:
                 break
@@ -317,6 +372,8 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
             "rollout_switches": switches,
             "params": count_parameters(policy),
             "run_dir": str(run_dir),
+            "skipped_minibatches": skipped_minibatches,
+            "repaired_parameter_tensors": repaired_parameter_tensors,
         }
         for name, values in age_rewards.items():
             metrics[f"rollout_reward_{name}"] = float(np.mean(values)) if values else float("nan")
@@ -344,9 +401,23 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
 
         if cfg.save_interval > 0 and (update % cfg.save_interval == 0 or update == cfg.total_updates):
             save_checkpoint(run_dir / "checkpoint.pt", policy, optimizer, cfg, policy_cfg, update, metrics)
+            if cfg.keep_checkpoints:
+                checkpoint_dir = run_dir / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                save_checkpoint(
+                    checkpoint_dir / f"update_{update:04d}.pt",
+                    policy,
+                    optimizer,
+                    cfg,
+                    policy_cfg,
+                    update,
+                    metrics,
+                )
 
     write_json(run_dir / "final_metrics.json", final_metrics)
     final_metrics["run_dir"] = str(run_dir)
+    _close_env()
+    atexit.unregister(_close_env)
     return final_metrics
 
 
@@ -361,6 +432,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=None)
     parser.add_argument("--context-len", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--save-interval", type=int, default=None)
+    parser.add_argument("--keep-checkpoints", action="store_true")
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
@@ -391,6 +464,10 @@ def apply_cli_overrides(cfg: TrainConfig, args: argparse.Namespace) -> TrainConf
         cfg.policy.context_len = args.context_len
     if args.learning_rate is not None:
         cfg.learning_rate = args.learning_rate
+    if args.save_interval is not None:
+        cfg.save_interval = args.save_interval
+    if args.keep_checkpoints:
+        cfg.keep_checkpoints = True
     if args.run_dir is not None:
         cfg.run_dir = args.run_dir
     if args.run_name is not None:

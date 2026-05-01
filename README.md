@@ -102,10 +102,63 @@ I added dedicated Melee Light configs:
 - `configs/melee_light_lvl0.yaml`
 - `configs/melee_light_lvl3.yaml`
 
-These runs use the built-in CPU opponent on the default Fox-vs-Marth setup with
-`frame_skip: 4` and 60-step episodes. Unlike the synthetic switching-duel
-benchmark, this adapter does not currently create a hidden opponent-type switch
-inside the episode, so the adaptation signal is much weaker.
+These configs now use external P2 control instead of the built-in CPU. The gym
+wrapper samples hidden scripted opponent styles and character matchups, then can
+switch styles mid-episode via the existing `opponent_pool` / `switch_hazard`
+mechanism. The default Melee Light style pool is:
+
+| style | intent |
+|---|---|
+| `rushdown` | close distance and attack quickly |
+| `approach_jab` | simple close-range pressure |
+| `spacer` | hold mid-range and poke |
+| `zoner` | back off and use specials |
+| `counter_poke` | shield or poke when close |
+| `jumper` | jump-heavy vertical pressure |
+| `mirror_agent` | mirror the learner's recent action |
+| `anti_frequency` | respond to the learner's most common actions |
+
+The default character pools are Fox/Falco/Falcon for the learner and
+Marth/Puff/Fox/Falco/Falcon for the scripted opponent. This makes Melee Light a
+closer match for latent policies because recent interaction history identifies
+both style and matchup.
+
+Current self-play-only result: I trained with `opponent_control: external`, so
+the built-in CPU was not used. P2 was driven by the hidden scripted style pool
+through the same action interface as the learner. The broad two-seed,
+12-update sweep found only a narrow latent edge:
+
+| agent | encoder | eval return | win rate |
+|---|---:|---:|---:|
+| `full_hyper` | `gru` | `-0.688` | `0.156` |
+| `static_mlp` | `mean` | `-0.719` | `0.141` |
+| `hyper_head` | `gru` | `-0.844` | `0.078` |
+| `film` | `gru` | `-0.906` | `0.047` |
+
+A longer 24-update follow-up on the top latent candidate versus static made the
+edge clearer:
+
+| agent | encoder | eval return | win rate |
+|---|---:|---:|---:|
+| `full_hyper` | `gru` | `-0.406` | `0.297` |
+| `static_mlp` | `mean` | `-0.625` | `0.188` |
+
+Takeaway: under this external self-play-style Melee Light setup,
+`full_hyper + gru` is the best current agent and is the only architecture with
+a repeatable edge over static in the new runs. The result files are
+`runs/melee_light_selfplay_may01_all_eval.csv` and
+`runs/melee_light_selfplay_may01_grouped.csv`.
+
+I also added a long GPU Elo experiment path for policy-vs-policy Melee Light:
+`scripts/run_melee_light_gpu_elo_experiment.sh`. It trains multiple agents with
+numbered checkpoint retention, then rates every sampled
+`agent x checkpoint_update x character` competitor in a multi-game Elo
+tournament. The Elo evaluator preserves policy context across warmup and scored
+games in each matchup so latent policies get time to adapt to the current
+opponent before the pairing result is applied.
+
+Previous CPU-opponent results are below for reference. They should not be mixed
+with the current self-play results because the environment contract changed.
 
 I ran a broad 16-update sweep across `static_mlp`, `hyper_head`, `full_hyper`,
 and `film`, using two seeds and 32 deterministic eval episodes per checkpoint:

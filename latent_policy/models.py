@@ -101,13 +101,19 @@ class ActorCritic(nn.Module):
     def logits_and_value(self, obs: torch.Tensor, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
+    def _stable_logits_and_value(self, obs: torch.Tensor, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        logits, value = self.logits_and_value(obs, context)
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0).clamp(-20.0, 20.0)
+        value = torch.nan_to_num(value, nan=0.0, posinf=1e6, neginf=-1e6)
+        return logits, value
+
     def get_action_and_value(
         self,
         obs: torch.Tensor,
         context: torch.Tensor,
         action: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, value = self.logits_and_value(obs, context)
+        logits, value = self._stable_logits_and_value(obs, context)
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
@@ -115,7 +121,7 @@ class ActorCritic(nn.Module):
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor, context: torch.Tensor, deterministic: bool) -> torch.Tensor:
-        logits, _ = self.logits_and_value(obs, context)
+        logits, _ = self._stable_logits_and_value(obs, context)
         if deterministic:
             return logits.argmax(dim=-1)
         return Categorical(logits=logits).sample()

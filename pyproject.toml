@@ -38,6 +38,7 @@ public = [
 [project.scripts]
 latent-policy-train = "latent_policy.ppo:main"
 latent-policy-eval = "latent_policy.evaluate:main"
+latent-policy-melee-elo = "latent_policy.melee_light_elo:main"
 latent-policy-sweep = "latent_policy.sweep:main"
 latent-policy-report = "latent_policy.analyze:main"
 latent-policy-public-suite = "latent_policy.public_suite:main"

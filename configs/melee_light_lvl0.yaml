@@ -35,9 +35,21 @@ public_env:
   max_cycles: 60
   switch_hazard: 0.05
   min_switch_interval: 8
+  opponent_pool:
+    - rushdown
+    - approach_jab
+    - spacer
+    - zoner
+    - counter_poke
+    - jumper
+    - mirror_agent
+    - anti_frequency
   env_kwargs:
     frame_skip: 4
     max_episode_frames: 240
     agent_character: 2
     opponent_character: 0
+    opponent_control: external
+    agent_character_pool: [2, 3, 4]
+    opponent_character_pool: [0, 1, 2, 3, 4]
     opponent_level: 0

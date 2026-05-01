@@ -62,7 +62,7 @@ def _flatten_obs(value: Any, space: Any | None = None) -> np.ndarray:
     arr = np.asarray(value, dtype=np.float32)
     if arr.shape == ():
         return arr.reshape(1)
-    return arr.reshape(-1).astype(np.float32)
+    return np.nan_to_num(arr.reshape(-1).astype(np.float32), nan=0.0, posinf=1e6, neginf=-1e6)
 
 
 def _sample_from_legal(rng: np.random.Generator, legal: list[int] | np.ndarray) -> int:
@@ -135,6 +135,136 @@ def _scripted_action(
     if policy == "repeat_self" and last_opp_action in legal_list:
         return int(last_opp_action)
     return _sample_from_legal(rng, legal_list)
+
+
+MELEE_LIGHT_CHARACTER_NAMES = {
+    0: "marth",
+    1: "puff",
+    2: "fox",
+    3: "falco",
+    4: "falcon",
+}
+
+
+def _parse_int_pool(value: Any, default: tuple[int, ...]) -> tuple[int, ...]:
+    if value is None:
+        return default
+    if isinstance(value, (int, np.integer)):
+        return (int(value),)
+    if isinstance(value, str):
+        return tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    return tuple(int(item) for item in value)
+
+
+def _melee_action(name: str, n_actions: int) -> int:
+    names = {
+        "idle": 0,
+        "left": 1,
+        "right": 2,
+        "up": 3,
+        "down": 4,
+        "jump": 5,
+        "shield": 6,
+        "jab": 7,
+        "tilt_up": 8,
+        "tilt_down": 9,
+        "tilt_left": 10,
+        "tilt_right": 11,
+        "smash_up": 12,
+        "smash_down": 13,
+        "smash_left": 14,
+        "smash_right": 15,
+        "special_n": 16,
+        "special_up": 17,
+        "special_left": 18,
+        "special_right": 19,
+    }
+    return min(max(0, names[name]), max(0, n_actions - 1))
+
+
+def _mirror_melee_action(action: int) -> int:
+    mirror = {
+        1: 2,
+        2: 1,
+        10: 11,
+        11: 10,
+        14: 15,
+        15: 14,
+        18: 19,
+        19: 18,
+    }
+    return mirror.get(int(action), int(action))
+
+
+def _melee_light_scripted_action(
+    policy: str,
+    n_actions: int,
+    rng: np.random.Generator,
+    obs: np.ndarray,
+    agent_action: int,
+    last_agent_action: int,
+    last_opp_action: int,
+    step: int,
+    agent_action_counts: np.ndarray | None,
+) -> int:
+    raw = np.asarray(obs, dtype=np.float32).reshape(-1)
+    if raw.size < 30:
+        return _scripted_action(policy, n_actions, rng, None, last_agent_action, last_opp_action, step, agent_action_counts)
+
+    target_dx = -float(raw[28])
+    distance = abs(target_dx)
+    grounded = bool(raw[21] > 0.5)
+    toward = _melee_action("left" if target_dx < 0 else "right", n_actions)
+    away = _melee_action("right" if target_dx < 0 else "left", n_actions)
+    tilt_toward = _melee_action("tilt_left" if target_dx < 0 else "tilt_right", n_actions)
+    smash_toward = _melee_action("smash_left" if target_dx < 0 else "smash_right", n_actions)
+    special_toward = _melee_action("special_left" if target_dx < 0 else "special_right", n_actions)
+
+    def choice(names: list[str]) -> int:
+        return _melee_action(names[int(rng.integers(0, len(names)))], n_actions)
+
+    if policy in {"random", "noisy"}:
+        return int(rng.integers(0, n_actions))
+    if policy in {"idle", "fixed0"}:
+        return _melee_action("idle", n_actions)
+    if policy == "mirror_agent":
+        return _mirror_melee_action(agent_action)
+    if policy == "rushdown":
+        if distance > 18:
+            return _melee_action("jump", n_actions) if grounded and step % 5 == 0 else toward
+        return smash_toward if distance < 9 and step % 3 == 0 else choice(["jab", "tilt_up"])
+    if policy == "approach_jab":
+        if distance > 13:
+            return toward
+        return choice(["jab", "tilt_up", "tilt_down"])
+    if policy == "spacer":
+        if distance < 11:
+            return away
+        if distance > 24:
+            return toward
+        return tilt_toward
+    if policy == "zoner":
+        if distance < 16:
+            return choice(["shield", "jump"]) if grounded and step % 2 == 0 else away
+        return _melee_action("special_n", n_actions) if step % 3 else special_toward
+    if policy == "counter_poke":
+        if distance < 10 and step % 4 == 0:
+            return _melee_action("shield", n_actions)
+        if distance < 18:
+            return tilt_toward
+        return toward if step % 2 else _melee_action("idle", n_actions)
+    if policy == "jumper":
+        if grounded and step % 3 == 0:
+            return _melee_action("jump", n_actions)
+        return choice(["tilt_up", "smash_up", "special_up"]) if distance < 14 else toward
+    if policy == "anti_frequency" and agent_action_counts is not None:
+        common = int(np.argmax(agent_action_counts))
+        if common in {1, 2}:
+            return smash_toward
+        if common in {6, 0}:
+            return toward
+        return _melee_action("shield", n_actions) if distance < 12 else special_toward
+    return _scripted_action(policy, n_actions, rng, None, last_agent_action, last_opp_action, step, agent_action_counts)
 
 
 class BasePublicVecEnv:
@@ -570,6 +700,7 @@ class PettingZooParallelDiscreteVecEnv(BasePublicVecEnv):
 class GymSingleDiscreteVecEnv(BasePublicVecEnv):
     def __init__(self, cfg: PublicEnvConfig):
         self._init_common(cfg)
+        self._init_melee_light_sampling()
         self.envs = [self._make_env() for _ in range(self.num_envs)]
         first = self._reset_one(0)
         self._last_obs = np.zeros((self.num_envs, _flatten_obs(first).shape[0]), dtype=np.float32)
@@ -592,6 +723,19 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
         self.obs_dim = self._last_obs.shape[1] + 2
         self.reset()
 
+    def _init_melee_light_sampling(self) -> None:
+        kwargs = self.cfg.env_kwargs
+        self._melee_light_agent_character_pool = _parse_int_pool(
+            kwargs.get("agent_character_pool"),
+            (int(kwargs.get("agent_character", 2)),),
+        )
+        self._melee_light_opponent_character_pool = _parse_int_pool(
+            kwargs.get("opponent_character_pool"),
+            (int(kwargs.get("opponent_character", 0)),),
+        )
+        self.melee_light_agent_character = np.zeros(self.num_envs, dtype=np.int64)
+        self.melee_light_opponent_character = np.zeros(self.num_envs, dtype=np.int64)
+
     def _make_env(self):
         if self.cfg.name == "SlimeVolley-v0":
             import gym
@@ -602,6 +746,8 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
             from latent_policy.melee_light_env import MeleeLightKnockbackEnv
 
             env_kwargs = dict(self.cfg.env_kwargs)
+            env_kwargs.pop("agent_character_pool", None)
+            env_kwargs.pop("opponent_character_pool", None)
             frame_skip = int(env_kwargs.get("frame_skip", 4))
             env_kwargs.setdefault("max_episode_frames", self.cfg.episode_length * max(1, frame_skip))
             return MeleeLightKnockbackEnv(**env_kwargs)
@@ -613,23 +759,53 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
 
         return gymnasium.make(self.cfg.name, **self.cfg.env_kwargs)
 
-    def _reset_one(self, env_id: int):
+    def _reset_one(self, env_id: int, options: dict[str, Any] | None = None):
         env = self.envs[env_id]
         try:
-            out = env.reset(seed=self.cfg.seed + env_id)
-        except TypeError:
-            out = env.reset()
+            try:
+                out = env.reset(seed=self.cfg.seed + env_id, options=options)
+            except TypeError:
+                out = env.reset(seed=self.cfg.seed + env_id) if options is None else env.reset()
+        except Exception:
+            if self.cfg.name != "melee_light_knockback":
+                raise
+            self._replace_env(env_id)
+            env = self.envs[env_id]
+            try:
+                out = env.reset(seed=self.cfg.seed + env_id, options=options)
+            except TypeError:
+                out = env.reset(seed=self.cfg.seed + env_id) if options is None else env.reset()
         obs = out[0] if isinstance(out, tuple) and len(out) == 2 else out
         if self.cfg.name == "footsies" and isinstance(obs, dict):
             return obs["p1"]
         return obs
 
+    def _replace_env(self, env_id: int) -> None:
+        old_env = self.envs[env_id]
+        try:
+            old_env.close()
+        except Exception:
+            pass
+        self.envs[env_id] = self._make_env()
+
+    def _sample_melee_light_characters(self, idx: np.ndarray) -> None:
+        if self.cfg.name != "melee_light_knockback" or idx.size == 0:
+            return
+        agent_pool = self._melee_light_agent_character_pool
+        opponent_pool = self._melee_light_opponent_character_pool
+        self.melee_light_agent_character[idx] = self.rng.choice(agent_pool, size=idx.size)
+        self.melee_light_opponent_character[idx] = self.rng.choice(opponent_pool, size=idx.size)
+
+    def _melee_light_reset_options(self, env_id: int) -> dict[str, Any] | None:
+        if self.cfg.name != "melee_light_knockback":
+            return None
+        return {
+            "agent_character": int(self.melee_light_agent_character[env_id]),
+            "opponent_character": int(self.melee_light_opponent_character[env_id]),
+        }
+
     def reset(self, indices: np.ndarray | list[int] | None = None) -> np.ndarray:
         idx = np.arange(self.num_envs) if indices is None else np.asarray(indices, dtype=np.int64)
-        for env_id in idx:
-            self._last_obs[int(env_id)] = _flatten_obs(self._reset_one(int(env_id)))
-            if self.cfg.name == "SlimeVolley-v0":
-                self.envs[int(env_id)].unwrapped.otherAction = None
         self.step_count[idx] = 0
         self.episode_return[idx] = 0.0
         self.last_reward[idx] = 0.0
@@ -637,6 +813,14 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
         self.last_opp_action[idx] = -1
         self._reset_action_stats(idx)
         self._sample_opponents(idx)
+        self._sample_melee_light_characters(idx)
+        for env_id in idx:
+            env_id_int = int(env_id)
+            self._last_obs[env_id_int] = _flatten_obs(
+                self._reset_one(env_id_int, options=self._melee_light_reset_options(env_id_int))
+            )
+            if self.cfg.name == "SlimeVolley-v0":
+                self.envs[env_id_int].unwrapped.otherAction = None
         return self._obs()
 
     def step(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
@@ -649,39 +833,62 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
         for env_id, env in enumerate(self.envs):
             action = self._map_action(int(actions[env_id]))
             self.last_agent_action[env_id] = int(actions[env_id])
-            if self.cfg.name == "footsies":
-                opp_action = _scripted_action(
-                    self._opponent_policy(env_id),
-                    self.action_space_n,
-                    self.rng,
-                    None,
-                    int(self.last_agent_action[env_id]),
-                    int(self.last_opp_action[env_id]),
-                    int(self.step_count[env_id]),
-                    None if self.agent_action_counts is None else self.agent_action_counts[env_id],
-                    None if self.opp_action_counts is None else self.opp_action_counts[env_id],
-                )
-                self.last_opp_action[env_id] = opp_action
-                opp_actions[env_id] = opp_action
-                out = env.step({"p1": int(action), "p2": int(opp_action)})
-            elif self.cfg.name == "SlimeVolley-v0":
-                opp_action = _scripted_action(
-                    self._opponent_policy(env_id),
-                    self.action_space_n,
-                    self.rng,
-                    None,
-                    int(self.last_agent_action[env_id]),
-                    int(self.last_opp_action[env_id]),
-                    int(self.step_count[env_id]),
-                    None if self.agent_action_counts is None else self.agent_action_counts[env_id],
-                    None if self.opp_action_counts is None else self.opp_action_counts[env_id],
-                )
-                self.last_opp_action[env_id] = opp_action
-                opp_actions[env_id] = opp_action
-                env.unwrapped.otherAction = self._map_action(int(opp_action))
-                out = env.step(action)
-            else:
-                out = env.step(action)
+            try:
+                if self.cfg.name == "footsies":
+                    opp_action = _scripted_action(
+                        self._opponent_policy(env_id),
+                        self.action_space_n,
+                        self.rng,
+                        None,
+                        int(self.last_agent_action[env_id]),
+                        int(self.last_opp_action[env_id]),
+                        int(self.step_count[env_id]),
+                        None if self.agent_action_counts is None else self.agent_action_counts[env_id],
+                        None if self.opp_action_counts is None else self.opp_action_counts[env_id],
+                    )
+                    self.last_opp_action[env_id] = opp_action
+                    opp_actions[env_id] = opp_action
+                    out = env.step({"p1": int(action), "p2": int(opp_action)})
+                elif self.cfg.name == "SlimeVolley-v0":
+                    opp_action = _scripted_action(
+                        self._opponent_policy(env_id),
+                        self.action_space_n,
+                        self.rng,
+                        None,
+                        int(self.last_agent_action[env_id]),
+                        int(self.last_opp_action[env_id]),
+                        int(self.step_count[env_id]),
+                        None if self.agent_action_counts is None else self.agent_action_counts[env_id],
+                        None if self.opp_action_counts is None else self.opp_action_counts[env_id],
+                    )
+                    self.last_opp_action[env_id] = opp_action
+                    opp_actions[env_id] = opp_action
+                    env.unwrapped.otherAction = self._map_action(int(opp_action))
+                    out = env.step(action)
+                elif self.cfg.name == "melee_light_knockback" and getattr(env, "uses_external_opponent", False):
+                    opp_action = _melee_light_scripted_action(
+                        self._opponent_policy(env_id),
+                        self.action_space_n,
+                        self.rng,
+                        self._last_obs[env_id],
+                        int(actions[env_id]),
+                        int(self.last_agent_action[env_id]),
+                        int(self.last_opp_action[env_id]),
+                        int(self.step_count[env_id]),
+                        None if self.agent_action_counts is None else self.agent_action_counts[env_id],
+                    )
+                    self.last_opp_action[env_id] = opp_action
+                    opp_actions[env_id] = opp_action
+                    out = env.step(int(action), opponent_action=int(opp_action))
+                else:
+                    out = env.step(action)
+            except Exception:
+                if self.cfg.name != "melee_light_knockback":
+                    raise
+                self._replace_env(env_id)
+                rewards[env_id] = 0.0
+                done[env_id] = True
+                continue
             if len(out) == 5:
                 obs, reward, terminated, truncated, _ = out
                 if self.cfg.name == "footsies":
@@ -705,11 +912,12 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
         self.episode_return += rewards
         forced_done = self.step_count >= self.cfg.episode_length
         done = done | forced_done
-        opponent_names = (
-            np.asarray([self._opponent_policy(i) for i in range(self.num_envs)])
-            if self.cfg.name in {"SlimeVolley-v0", "footsies"}
-            else np.asarray(["builtin" for _ in range(self.num_envs)])
-        )
+        if self.cfg.name == "melee_light_knockback":
+            opponent_names = np.asarray([self._melee_light_opponent_name(i) for i in range(self.num_envs)])
+        elif self.cfg.name in {"SlimeVolley-v0", "footsies"}:
+            opponent_names = np.asarray([self._opponent_policy(i) for i in range(self.num_envs)])
+        else:
+            opponent_names = np.asarray(["builtin" for _ in range(self.num_envs)])
         info = {
             "switched": switched,
             "opponent_age": age_at_action,
@@ -718,9 +926,20 @@ class GymSingleDiscreteVecEnv(BasePublicVecEnv):
             "episode_return": np.where(done, self.episode_return, np.nan).astype(np.float32),
             "episode_length": np.where(done, self.step_count, 0).astype(np.int32),
         }
+        if self.cfg.name == "melee_light_knockback":
+            info["agent_character"] = self.melee_light_agent_character.copy()
+            info["opponent_character"] = self.melee_light_opponent_character.copy()
         if np.any(done):
             self.reset(np.nonzero(done)[0])
         return self._obs(), rewards, done.astype(np.bool_), info
+
+    def _melee_light_opponent_name(self, env_id: int) -> str:
+        env = self.envs[env_id]
+        if not getattr(env, "uses_external_opponent", False):
+            return "cpu"
+        character_id = int(self.melee_light_opponent_character[env_id])
+        character = MELEE_LIGHT_CHARACTER_NAMES.get(character_id, str(character_id))
+        return f"{self._opponent_policy(env_id)}:{character}"
 
     def _map_action(self, action: int):
         if self._action_mode == "discrete":

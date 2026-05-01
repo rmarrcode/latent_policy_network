@@ -84,6 +84,15 @@ def test_runtime_bridge_removes_loading_overlay():
     assert "resetVfxQueue()" in source
 
 
+def test_runtime_bridge_supports_external_opponent_control():
+    bridge_path = Path(__file__).resolve().parents[1] / "latent_policy" / "melee_light_runtime" / "runtime_bridge.js"
+    source = bridge_path.read_text(encoding="utf-8")
+    assert 'opponent_control: "cpu"' in source
+    assert 'setPlayerType(1, bridgeConfig.opponent_control === "cpu" ? 1 : 2)' in source
+    assert "setNetworkInput(1, actionToInput(0))" in source
+    assert "setNetworkInput(1, actionToInput(opponentAction == null ? 0 : opponentAction))" in source
+
+
 def test_gym_single_make_env_routes_to_melee_light(monkeypatch):
     melee_module = importlib.import_module("latent_policy.melee_light_env")
     captured: dict[str, object] = {}
@@ -107,6 +116,66 @@ def test_gym_single_make_env_routes_to_melee_light(monkeypatch):
     assert captured["frame_skip"] == 3
     assert captured["opponent_level"] == 2
     assert captured["max_episode_frames"] == 63
+
+
+def test_gym_single_melee_light_external_opponent_uses_scripted_action(monkeypatch):
+    melee_module = importlib.import_module("latent_policy.melee_light_env")
+    captured: dict[str, object] = {"resets": [], "steps": []}
+
+    class Discrete:
+        def __init__(self, n: int):
+            self.n = n
+
+    class DummyMeleeLightKnockbackEnv:
+        action_space = Discrete(20)
+
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            self.uses_external_opponent = kwargs.get("opponent_control") != "cpu"
+
+        def reset(self, seed=None, options=None):
+            captured["resets"].append({"seed": seed, "options": options})
+            return np.zeros(30, dtype=np.float32), {}
+
+        def step(self, action, opponent_action=None):
+            captured["steps"].append({"action": action, "opponent_action": opponent_action})
+            return np.zeros(30, dtype=np.float32), 1.0, True, False, {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(melee_module, "MeleeLightKnockbackEnv", DummyMeleeLightKnockbackEnv)
+    vec_env = GymSingleDiscreteVecEnv(
+        PublicEnvConfig(
+            kind="gym_single",
+            name="melee_light_knockback",
+            num_envs=1,
+            episode_length=5,
+            opponent_pool=("rushdown",),
+            env_kwargs={
+                "opponent_control": "external",
+                "agent_character_pool": [2],
+                "opponent_character_pool": [3],
+            },
+        )
+    )
+
+    try:
+        _, rewards, done, info = vec_env.step(np.array([2]))
+    finally:
+        vec_env.close()
+
+    assert "agent_character_pool" not in captured["init_kwargs"]
+    assert "opponent_character_pool" not in captured["init_kwargs"]
+    assert captured["init_kwargs"]["opponent_control"] == "external"
+    assert captured["resets"][-1]["options"] == {"agent_character": 2, "opponent_character": 3}
+    assert captured["steps"][0]["action"] == 2
+    assert captured["steps"][0]["opponent_action"] is not None
+    assert rewards.tolist() == [1.0]
+    assert done.tolist() == [True]
+    assert info["opponent_name"].tolist() == ["rushdown:falco"]
+    assert info["agent_character"].tolist() == [2]
+    assert info["opponent_character"].tolist() == [3]
 
 
 def test_gym_single_terminal_reward_survives_auto_reset(monkeypatch):

@@ -318,3 +318,247 @@ Grouped means:
   hypothesis because it uses a fixed built-in CPU opponent rather than the
   hidden-opponent-switching structure that generated-weight adaptation is meant
   to exploit.
+
+## 2026-05-01 Melee Light Self-Play Adapter
+
+Changed Melee Light so P2 can be controlled externally instead of by the built-in
+CPU:
+
+- `latent_policy/melee_light_runtime/runtime_bridge.js` now accepts an optional
+  P2 action in `env.step(action, opponentAction, callback)`.
+- `MeleeLightKnockbackEnv.step()` now accepts `opponent_action`.
+- `GymSingleDiscreteVecEnv` now detects Melee Light external-opponent mode and
+  drives P2 with hidden scripted opponent policies.
+- `configs/melee_light_lvl0.yaml`, `configs/melee_light_lvl3.yaml`, and the
+  `public_suite` Melee Light spec now default to `opponent_control: external`.
+
+Default opponent style pool:
+
+| style | behavior |
+|---|---|
+| `rushdown` | closes distance, jumps occasionally, and attacks when close |
+| `approach_jab` | moves in and uses jabs/tilts |
+| `spacer` | backs off when too close and pokes at mid-range |
+| `zoner` | retreats and uses specials from distance |
+| `counter_poke` | shields at close range and pokes otherwise |
+| `jumper` | jump-heavy vertical pressure |
+| `mirror_agent` | mirrors the learner's current action with left/right inversion |
+| `anti_frequency` | responds to the learner's most common action class |
+
+Default character pools:
+
+| side | characters |
+|---|---|
+| learner | Fox, Falco, Falcon |
+| scripted opponent | Marth, Puff, Fox, Falco, Falcon |
+
+This makes Melee Light a better fit for latent policies than the old CPU setup:
+the agent must infer both the opponent's style and matchup from recent game
+state, and the style can switch mid-episode through `switch_hazard`.
+
+Verification:
+
+```bash
+../.venv/bin/pytest -q tests/test_melee_light_env.py tests/test_public_envs.py
+```
+
+Browser smoke:
+
+```bash
+../.venv/bin/python - <<'PY'
+from latent_policy.melee_light_env import MeleeLightKnockbackEnv
+
+env = MeleeLightKnockbackEnv(
+    frame_skip=4,
+    max_episode_frames=32,
+    opponent_control="external",
+    agent_character=2,
+    opponent_character=3,
+    opponent_level=0,
+)
+try:
+    obs, info = env.reset(seed=123)
+    for action, opponent_action in [(2, 1), (7, 6), (15, 14)]:
+        obs, reward, terminated, truncated, info = env.step(action, opponent_action=opponent_action)
+        if terminated or truncated:
+            break
+finally:
+    env.close()
+PY
+```
+
+## 2026-05-01 Melee Light Self-Play-Only Experiment
+
+I ran another Melee Light pass using only the external P2 path:
+`configs/melee_light_lvl0.yaml` has `opponent_control: external`, and no
+built-in CPU opponent was used. P2 was controlled by the hidden scripted
+self-play-style pool from the adapter above. This is still not a separately
+learned opponent policy, but it gives the learner an opponent whose strategy and
+character are hidden and switchable.
+
+### Broad 12-Update Sweep
+
+Training pattern:
+
+```bash
+for seed in 1 2; do
+  for pair in static_mlp:mean hyper_head:gru full_hyper:gru film:gru; do
+    agent="${pair%%:*}"
+    encoder="${pair##*:}"
+    ../.venv/bin/python -m latent_policy.ppo \
+      --config configs/melee_light_lvl0.yaml \
+      --agent "$agent" \
+      --encoder "$encoder" \
+      --seed "$seed" \
+      --total-updates 12 \
+      --run-dir runs/melee_light_selfplay_may01 \
+      --run-name "selfplay_${agent}_${encoder}_seed${seed}" \
+      --no-progress
+  done
+done
+```
+
+Evaluation: 32 deterministic episodes per checkpoint.
+
+```bash
+../.venv/bin/python -m latent_policy.evaluate \
+  runs/melee_light_selfplay_may01/selfplay_full_hyper_gru_seed1/checkpoint.pt \
+  --episodes 32
+```
+
+I repeated evaluation for all checkpoints from both seeds and combined the
+outputs into:
+
+- `runs/melee_light_selfplay_may01_eval_seed1.csv`
+- `runs/melee_light_selfplay_may01_eval_seed2.csv`
+- `runs/melee_light_selfplay_may01_all_eval.csv`
+- `runs/melee_light_selfplay_may01_grouped.csv`
+
+Grouped means:
+
+| phase | agent | encoder | seeds | eval return | win rate | loss rate | eval length | positive step rate | switches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `selfplay_12_update` | `full_hyper` | `gru` | `2` | `-0.688` | `0.156` | `0.844` | `25.109` | `0.0068` | `24.0` |
+| `selfplay_12_update` | `static_mlp` | `mean` | `2` | `-0.719` | `0.141` | `0.859` | `29.578` | `0.0055` | `32.5` |
+| `selfplay_12_update` | `hyper_head` | `gru` | `2` | `-0.844` | `0.078` | `0.922` | `33.453` | `0.0025` | `36.0` |
+| `selfplay_12_update` | `film` | `gru` | `2` | `-0.906` | `0.047` | `0.953` | `36.328` | `0.0017` | `35.5` |
+
+Per-run result:
+
+| agent | seed | eval return | win rate | loss rate | eval length | switches |
+|---|---:|---:|---:|---:|---:|---:|
+| `static_mlp` | `1` | `-0.438` | `0.281` | `0.719` | `25.406` | `24` |
+| `full_hyper` | `1` | `-0.812` | `0.094` | `0.906` | `29.250` | `29` |
+| `hyper_head` | `1` | `-0.750` | `0.125` | `0.875` | `29.625` | `32` |
+| `film` | `1` | `-1.000` | `0.000` | `1.000` | `45.125` | `43` |
+| `static_mlp` | `2` | `-1.000` | `0.000` | `1.000` | `33.750` | `41` |
+| `full_hyper` | `2` | `-0.562` | `0.219` | `0.781` | `20.969` | `19` |
+| `hyper_head` | `2` | `-0.938` | `0.031` | `0.969` | `37.281` | `40` |
+| `film` | `2` | `-0.812` | `0.094` | `0.906` | `27.531` | `28` |
+
+The 12-update sweep gave `full_hyper + gru` the best mean return, but the edge
+over static was small: `+0.031` return and `+0.016` win rate. Static also had
+the best single seed, so this pass alone was not enough to claim a stable
+latent advantage.
+
+### 24-Update Follow-Up
+
+I extended only the strongest latent candidate and the static baseline:
+
+```bash
+for seed in 1 2; do
+  for pair in static_mlp:mean full_hyper:gru; do
+    agent="${pair%%:*}"
+    encoder="${pair##*:}"
+    ../.venv/bin/python -m latent_policy.ppo \
+      --config configs/melee_light_lvl0.yaml \
+      --agent "$agent" \
+      --encoder "$encoder" \
+      --seed "$seed" \
+      --total-updates 24 \
+      --run-dir runs/melee_light_selfplay_may01_followup \
+      --run-name "selfplay_long_${agent}_${encoder}_seed${seed}" \
+      --no-progress
+  done
+done
+```
+
+Grouped means:
+
+| phase | agent | encoder | seeds | eval return | win rate | loss rate | eval length | positive step rate | switches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `selfplay_24_update` | `full_hyper` | `gru` | `2` | `-0.406` | `0.297` | `0.703` | `32.406` | `0.0127` | `30.5` |
+| `selfplay_24_update` | `static_mlp` | `mean` | `2` | `-0.625` | `0.188` | `0.812` | `38.609` | `0.0048` | `40.5` |
+
+Per-run result:
+
+| agent | seed | eval return | win rate | loss rate | eval length | switches |
+|---|---:|---:|---:|---:|---:|---:|
+| `full_hyper` | `1` | `-0.688` | `0.156` | `0.844` | `44.906` | `44` |
+| `static_mlp` | `1` | `-0.688` | `0.156` | `0.844` | `35.469` | `33` |
+| `full_hyper` | `2` | `-0.125` | `0.438` | `0.562` | `19.906` | `17` |
+| `static_mlp` | `2` | `-0.562` | `0.219` | `0.781` | `41.750` | `48` |
+
+### Self-Play Takeaway
+
+- The external self-play-style Melee Light setup is a better match for the
+  latent-policy hypothesis than the old CPU setup because opponent style and
+  character are hidden variables that must be inferred online.
+- `full_hyper + gru` is the best current Melee Light self-play agent. In the
+  24-update follow-up it beat static by `+0.219` return and `+0.109` win rate.
+- `hyper_head + gru` and `film + gru` did not show an advantage in this run.
+- The conclusion is still bounded by a small sample: two seeds and 32 eval
+  episodes per checkpoint. The result is a useful edge, not a final benchmark.
+
+## 2026-05-01 Long GPU Melee Light Elo Experiment
+
+I added an extensive GPU experiment path for policy-vs-policy Melee Light Elo:
+
+- `configs/melee_light_gpu_elo.yaml` trains on all five available characters
+  with `opponent_control: external`, `context_len: 32`, 90-step episodes, and
+  update-numbered checkpoint retention.
+- `latent_policy.ppo` now supports `keep_checkpoints` plus
+  `--keep-checkpoints` / `--save-interval`, so Elo can evaluate points in
+  training instead of only the final checkpoint.
+- `latent_policy.melee_light_elo` treats each
+  `agent x checkpoint_update x character` item as an Elo competitor.
+- `scripts/run_melee_light_gpu_elo_experiment.sh` runs the full train/eval
+  sequence.
+
+Launched run:
+
+```bash
+tmux new-session -d -s melee_elo_extensive \
+  "cd /home/ryan-marr/Documents/secret/latent_policy_env/latent_policy && \
+   RUN_TAG=melee_light_gpu_elo_may01_extensive \
+   TOTAL_UPDATES=120 SAVE_INTERVAL=30 SEEDS='1 2' \
+   AGENT_ENCODERS='static_mlp:mean hyper_head:gru full_hyper:gru film:gru' \
+   CHARACTERS='marth,puff,fox,falco,falcon' \
+   WARMUP_GAMES=16 SCORED_GAMES=48 MAX_PAIRINGS=320 \
+   MIN_PAIRINGS_PER_COMPETITOR=4 PROGRESS_EVERY=5 DEVICE=cuda \
+   bash scripts/run_melee_light_gpu_elo_experiment.sh 2>&1 | \
+   tee runs/melee_light_gpu_elo_may01_extensive/experiment.log"
+```
+
+Protocol:
+
+- Training: 4 architectures x 2 seeds x 120 updates, saving update `30`, `60`,
+  `90`, and `120`.
+- Stability adjustment: the first `full_hyper + gru` seed-`1` attempt at the
+  default `3e-4` learning rate produced NaN logits after update `30`, so I
+  moved that partial run under `runs/melee_light_gpu_elo_may01_extensive/failed/`
+  and resumed `full_hyper` training at `1e-4`.
+- Competitors: checkpoint points crossed with Marth, Puff, Fox, Falco, and
+  Falcon.
+- Elo pairings: 320 sampled pairings, both side orders per pairing.
+- Adaptation window: each side-order series has 16 warmup games followed by 48
+  scored games. Policy context is reset only at the start of the side-order
+  series and is preserved across games inside the series.
+
+Expected outputs:
+
+- `runs/melee_light_gpu_elo_may01_extensive/train/`
+- `runs/melee_light_gpu_elo_may01_extensive/elo/elo.csv`
+- `runs/melee_light_gpu_elo_may01_extensive/elo/pair_results.csv`
+- `runs/melee_light_gpu_elo_may01_extensive/elo/agent_update_character_summary.csv`
+- `runs/melee_light_gpu_elo_may01_extensive/elo/report.md`

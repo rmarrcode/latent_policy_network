@@ -39,6 +39,7 @@ const DEFAULT_CONFIG = {
   opponent_character: 0,
   stage: 0,
   opponent_level: 4,
+  opponent_control: "cpu",
   close_spawn: true,
   spawn_spacing: 48,
   spawn_y: 0,
@@ -162,6 +163,7 @@ function configureMatch() {
   cpuDifficulty[1] = bridgeConfig.opponent_level;
   setCS(0, bridgeConfig.agent_character);
   setCS(1, bridgeConfig.opponent_character);
+  setPlayerType(1, bridgeConfig.opponent_control === "cpu" ? 1 : 2);
 }
 
 function placePlayer(index, x, y, face) {
@@ -244,6 +246,7 @@ function freezeMatch() {
 function beginMatch() {
   resetNetworkInputs();
   setNetworkInput(0, actionToInput(0));
+  setNetworkInput(1, actionToInput(0));
   pendingOutcome = null;
   episodeFrameCount = 0;
   configureMatch();
@@ -339,12 +342,15 @@ function reset(config) {
   };
 }
 
-function asyncStep(action, callback) {
+function asyncStep(action, opponentAction, callback) {
   if (pendingOutcome !== null) {
     callback(stepResult(pendingOutcome));
     return;
   }
   setNetworkInput(0, actionToInput(action));
+  if (bridgeConfig.opponent_control !== "cpu") {
+    setNetworkInput(1, actionToInput(opponentAction == null ? 0 : opponentAction));
+  }
   const targetFrame = logicFrameCount + bridgeConfig.frame_skip;
 
   function poll() {
@@ -411,8 +417,12 @@ export function initMeleeLightKnockbackBridge() {
     ready: true,
     debugState,
     reset,
-    step(action, callback) {
-      asyncStep(action, callback);
+    step(action, opponentActionOrCallback, maybeCallback) {
+      if (typeof opponentActionOrCallback === "function") {
+        asyncStep(action, 0, opponentActionOrCallback);
+        return;
+      }
+      asyncStep(action, opponentActionOrCallback, maybeCallback);
     },
   };
   envReady = true;

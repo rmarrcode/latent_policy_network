@@ -47,7 +47,7 @@ def evaluate_policy_in_env(
 ) -> dict[str, Any]:
     obs_np = env.reset()
     eval_envs = env.num_envs
-    obs = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+    obs = torch.nan_to_num(torch.as_tensor(obs_np, dtype=torch.float32, device=device), nan=0.0, posinf=1e6, neginf=-1e6)
     context = torch.zeros((eval_envs, context_len, env.obs_dim), dtype=torch.float32, device=device)
 
     episode_returns: list[float] = []
@@ -77,7 +77,12 @@ def evaluate_policy_in_env(
                 episode_returns.append(float(ret))
                 episode_lengths.append(int(length))
 
-        obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
+        obs = torch.nan_to_num(
+            torch.as_tensor(next_obs_np, dtype=torch.float32, device=device),
+            nan=0.0,
+            posinf=1e6,
+            neginf=-1e6,
+        )
         done = torch.as_tensor(done_np, dtype=torch.bool, device=device)
         context = append_context(context, obs, done)
         steps += 1

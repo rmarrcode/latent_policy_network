@@ -1,6 +1,6 @@
 {
   "node_version": "v16.20.2",
-  "patch_version": "melee-light-knockback-v8",
+  "patch_version": "melee-light-self-play-v1",
   "repo_url": "https://github.com/Saber0Github/smashmelee.git",
-  "template_hash": "f4f5b7e09a8e2329778381e3dca4b06d50f94801e05a1733dc97f59ec809dd8e"
+  "template_hash": "39650010cf17bdcc067dc2f477e514e78b4f9da3c99ad641e8b11b1075106aa5"
 }

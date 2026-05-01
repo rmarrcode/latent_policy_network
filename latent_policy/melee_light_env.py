@@ -19,7 +19,7 @@ MELEE_LIGHT_REPO_URL = "https://github.com/Saber0Github/smashmelee.git"
 NODE_VERSION = "v16.20.2"
 NODE_DIST = f"node-{NODE_VERSION}-linux-x64"
 NODE_TARBALL_URL = f"https://nodejs.org/dist/{NODE_VERSION}/{NODE_DIST}.tar.xz"
-RUNTIME_PATCH_VERSION = "melee-light-knockback-v8"
+RUNTIME_PATCH_VERSION = "melee-light-self-play-v1"
 OBS_DIM = 30
 _RUNTIME_LOCK = threading.Lock()
 
@@ -288,6 +288,7 @@ class MeleeLightKnockbackEnv:
         opponent_character: int = 0,
         stage: int = 0,
         opponent_level: int = 4,
+        opponent_control: str = "cpu",
         close_spawn: bool = True,
         spawn_spacing: float = 48.0,
         spawn_y: float = 0.0,
@@ -311,10 +312,12 @@ class MeleeLightKnockbackEnv:
             "opponent_character": int(opponent_character),
             "stage": int(stage),
             "opponent_level": int(opponent_level),
+            "opponent_control": str(opponent_control),
             "close_spawn": bool(close_spawn),
             "spawn_spacing": float(spawn_spacing),
             "spawn_y": float(spawn_y),
         }
+        self.uses_external_opponent = str(opponent_control) != "cpu"
         self.render_mode = render_mode
         self._startup_timeout_s = float(startup_timeout_s)
         self._script_timeout_s = float(script_timeout_s)
@@ -373,24 +376,28 @@ class MeleeLightKnockbackEnv:
         if options:
             config.update({k: int(v) if isinstance(v, (bool, int, np.integer)) else v for k, v in options.items()})
         payload = self._driver.execute_script("return window.__meleeLightKnockbackEnv.reset(arguments[0]);", config)
-        obs = np.asarray(payload["observation"], dtype=np.float32)
+        obs = np.nan_to_num(np.asarray(payload["observation"], dtype=np.float32), nan=0.0, posinf=1e6, neginf=-1e6)
         info = dict(payload.get("info", {}))
         return obs, info
 
-    def step(self, action: int):
+    def step(self, action: int, opponent_action: int | None = None):
         payload = self._driver.execute_async_script(
             """
             const action = arguments[0];
+            const opponentAction = arguments[1];
             const done = arguments[arguments.length - 1];
             const env = window.__meleeLightKnockbackEnv;
-            env.step(action, function(result) {
+            env.step(action, opponentAction, function(result) {
               done(result);
             });
             """,
             int(action),
+            None if opponent_action is None else int(opponent_action),
         )
-        obs = np.asarray(payload["observation"], dtype=np.float32)
+        obs = np.nan_to_num(np.asarray(payload["observation"], dtype=np.float32), nan=0.0, posinf=1e6, neginf=-1e6)
         reward = float(payload["reward"])
+        if not np.isfinite(reward):
+            reward = 0.0
         terminated = bool(payload["terminated"])
         truncated = bool(payload["truncated"])
         info = dict(payload.get("info", {}))
