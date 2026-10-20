@@ -15,3 +15,21 @@ def test_policy_shapes(agent):
     assert logprob.shape == (3,)
     assert entropy.shape == (3,)
     assert value.shape == (3,)
+
+
+def test_policy_action_path_sanitizes_nonfinite_outputs():
+    cfg = PolicyConfig(obs_dim=12, action_dim=5, context_len=6, agent="full_hyper", encoder="gru", hidden_dim=32, latent_dim=32)
+    policy = build_policy(cfg)
+    with torch.no_grad():
+        for param in policy.parameters():
+            param.fill_(float("nan"))
+            break
+
+    obs = torch.zeros(3, cfg.obs_dim)
+    context = torch.zeros(3, cfg.context_len, cfg.obs_dim)
+    action, logprob, entropy, value = policy.get_action_and_value(obs, context)
+
+    assert action.shape == (3,)
+    assert torch.isfinite(logprob).all()
+    assert torch.isfinite(entropy).all()
+    assert torch.isfinite(value).all()
