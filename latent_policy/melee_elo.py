@@ -12,7 +12,7 @@ import torch
 from latent_policy.melee_env import MeleeConfig, make_melee_env
 from latent_policy.melee_self_play import RuntimePolicy, SelfPlayConfig, write_csv
 from latent_policy.models import PolicyConfig, build_policy, count_parameters
-from latent_policy.utils import select_device, set_seed
+from latent_policy.utils import select_device, set_seed, write_json
 
 
 def fit_elo(competitors: int, results: list[tuple[int, int, float, int]], regularization: float = 1.0) -> np.ndarray:
@@ -39,23 +39,107 @@ def fit_elo(competitors: int, results: list[tuple[int, int, float, int]], regula
     return 1500 + (strength - strength.mean()) * 400 / np.log(10)
 
 
+def play_bout(env, runtimes):
+    obs = env.reset()
+    while True:
+        actions = [runtime.act(obs[side]) for side, runtime in enumerate(runtimes)]
+        obs, rewards, done, info = env.step(actions)
+        for side, runtime in enumerate(runtimes):
+            runtime.observe(obs[side])
+        if done:
+            return rewards, info
+
+
 def play_series(env, first, second, options: SelfPlayConfig) -> tuple[float, int]:
     runtimes = [RuntimePolicy(first), RuntimePolicy(second)]
     score = 0.0
     frames = 0
     for bout in range(options.eval_warmup_bouts + options.eval_games_per_side):
-        obs = env.reset()
-        while True:
-            actions = [runtime.act(obs[side]) for side, runtime in enumerate(runtimes)]
-            obs, rewards, done, info = env.step(actions)
-            for side, runtime in enumerate(runtimes):
-                runtime.observe(obs[side])
-            if done:
-                if bout >= options.eval_warmup_bouts:
-                    score += (float(rewards[0]) + 1) / 2
-                    frames += info["frames"]
-                break
+        rewards, info = play_bout(env, runtimes)
+        if bout >= options.eval_warmup_bouts:
+            score += (float(rewards[0]) + 1) / 2
+            frames += info["frames"]
     return score, frames
+
+
+def select_pairings(competitors: int, opponents_per_checkpoint: int) -> list[tuple[int, int]]:
+    if opponents_per_checkpoint < 0 or opponents_per_checkpoint % 2:
+        raise ValueError("opponents_per_checkpoint must be zero or a positive even number")
+    rng = np.random.default_rng(10_000)
+    if opponents_per_checkpoint == 0 or opponents_per_checkpoint >= competitors - 1:
+        pairs = list(itertools.combinations(range(competitors), 2))
+    else:
+        order = rng.permutation(competitors).tolist()
+        edges = set()
+        for distance in range(1, opponents_per_checkpoint // 2 + 1):
+            for index, first in enumerate(order):
+                second = order[(index + distance) % competitors]
+                edges.add(tuple(sorted((first, second))))
+        pairs = sorted(edges)
+    rng.shuffle(pairs)
+    return pairs
+
+
+def evaluate_switches(env, policies, manifest, options: SelfPlayConfig, output: Path) -> None:
+    seeds = sorted({entry["seed"] for entry in manifest})
+    final_update = max(entry["update"] for entry in manifest)
+    final_indices = [index for index, entry in enumerate(manifest) if entry["update"] == final_update]
+    rows = []
+    write_json(output / "switch_protocol.json", {
+        "held_out_training_seed": len(seeds) > 1, "warmup_bouts": options.eval_warmup_bouts,
+        "scored_bouts_after_switch": options.eval_switch_games, "reset_learner_context_on_switch": False,
+        "balanced_controller_ports": True,
+    })
+    for learner_index in final_indices:
+        learner_entry = manifest[learner_index]
+        seed_index = seeds.index(learner_entry["seed"])
+        target_seed = seeds[(seed_index + 1) % len(seeds)]
+        targets = [index for index in final_indices if manifest[index]["seed"] == target_seed]
+        old_index = next(index for index, entry in enumerate(manifest)
+                         if entry["seed"] == target_seed and entry["update"] == 0)
+        for target_index in targets:
+            for side in (0, 1):
+                set_seed(20_000 + seed_index * 100 + targets.index(target_index) * 2 + side)
+                learner = RuntimePolicy(policies[learner_index])
+                old_opponent = RuntimePolicy(policies[old_index])
+                runtimes = [learner, old_opponent] if side == 0 else [old_opponent, learner]
+                for _ in range(options.eval_warmup_bouts):
+                    play_bout(env, runtimes)
+                new_opponent = RuntimePolicy(policies[target_index])
+                runtimes[1 - side] = new_opponent
+                for bout in range(options.eval_switch_games):
+                    rewards, info = play_bout(env, runtimes)
+                    rows.append({"agent": learner_entry["agent"], "seed": learner_entry["seed"],
+                                 "checkpoint": learner_entry["id"], "old_opponent": manifest[old_index]["id"],
+                                 "new_opponent": manifest[target_index]["id"], "target_seed": target_seed,
+                                 "port": side + 1, "bout_since_switch": bout,
+                                 "score": (float(rewards[side]) + 1) / 2, "frames": info["frames"],
+                                 "reason": info.get("reason", "unspecified")})
+                write_csv(output / "switch_bouts.csv", rows)
+        print(f"Switch evaluation complete: {learner_entry['id']}", flush=True)
+    summary = []
+    for agent in sorted({row["agent"] for row in rows}):
+        for bout in range(options.eval_switch_games):
+            scores = [row["score"] for row in rows if row["agent"] == agent and row["bout_since_switch"] == bout]
+            summary.append({"agent": agent, "bout_since_switch": bout, "games": len(scores),
+                            "mean_score": float(np.mean(scores)), "score_std": float(np.std(scores))})
+    write_csv(output / "switch_summary.csv", summary)
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(9, 5))
+    for agent in sorted({row["agent"] for row in summary}):
+        points = [row for row in summary if row["agent"] == agent]
+        axis.plot([row["bout_since_switch"] for row in points], [row["mean_score"] for row in points],
+                  marker="o", label=agent)
+    axis.set(xlabel="Bout since hidden opponent switch (0 = first)", ylabel="Mean score (draw = 0.5)",
+             ylim=(0, 1), title="Final checkpoints: " + ("held-out training-seed opponents" if len(seeds) > 1 else "same-seed opponents"))
+    axis.grid(alpha=0.2)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output / "switch_adaptation.png", dpi=180)
+    plt.close(figure)
 
 
 def plot_elo(run_dir: str | Path) -> Path:
@@ -123,8 +207,15 @@ def evaluate_checkpoints(run_dir: str | Path, device: str = "auto", env_factory=
             raise ValueError("Checkpoint count differs from manifest")
         policies.append(policy.eval())
     matches, results = [], []
-    pairs = list(itertools.combinations(range(len(manifest)), 2))
-    np.random.default_rng(10_000).shuffle(pairs)
+    pairs = select_pairings(len(manifest), options.eval_opponents_per_checkpoint)
+    coverage = [sum(index in pair for pair in pairs) for index in range(len(manifest))]
+    write_json(output / "evaluation_plan.json", {
+        "strategy": "full_round_robin" if len(pairs) == len(manifest) * (len(manifest) - 1) // 2 else "balanced_connected_graph",
+        "pairings": len(pairs), "seed": 10_000,
+        "opponents_per_checkpoint": {entry["id"]: coverage[index] for index, entry in enumerate(manifest)},
+        "scored_games_per_pairing": options.eval_games_per_side * 2,
+        "warmup_bouts_per_side": options.eval_warmup_bouts,
+    })
     env = env_factory(melee_cfg)
     try:
         for pair_index, (first, second) in enumerate(pairs):
@@ -143,12 +234,14 @@ def evaluate_checkpoints(run_dir: str | Path, device: str = "auto", env_factory=
             write_csv(output / "matches.csv", matches)
             print(f"Elo pairing {pair_index + 1}/{len(pairs)}: "
                   f"{manifest[first]['id']} vs {manifest[second]['id']}: {score:g}/{games}", flush=True)
+        ratings = fit_elo(len(manifest), results)
+        rows = [{**entry, "elo": float(ratings[index])} for index, entry in enumerate(manifest)]
+        write_csv(output / "elo.csv", rows)
+        print(f"wrote {plot_elo(output)}", flush=True)
+        if options.eval_switch_games:
+            evaluate_switches(env, policies, manifest, options, output)
     finally:
         env.close()
-    ratings = fit_elo(len(manifest), results)
-    rows = [{**entry, "elo": float(ratings[index])} for index, entry in enumerate(manifest)]
-    write_csv(output / "elo.csv", rows)
-    print(f"wrote {plot_elo(output)}")
     return rows
 
 

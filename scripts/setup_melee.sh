@@ -13,4 +13,8 @@ if [[ ! -f "$target" ]]; then
 fi
 echo '87e9ef6d80ed03354a1647d0616016dbc91399aa9e86a69ae5a398edd0a0c2bd  .cache/slippi/Slippi_Online-x86_64-ExiAI.AppImage' | sha256sum --check
 chmod +x "$target"
-APPIMAGE_EXTRACT_AND_RUN=1 "$PYTHON_BIN" -c 'from melee.console import get_dolphin_version; print(get_dolphin_version(".cache/slippi/Slippi_Online-x86_64-ExiAI.AppImage"))'
+(
+    cd .cache/slippi
+    ./Slippi_Online-x86_64-ExiAI.AppImage --appimage-extract > extract.log
+)
+"$PYTHON_BIN" -c 'from melee.console import get_dolphin_version; print(get_dolphin_version(".cache/slippi/squashfs-root/AppRun"))'

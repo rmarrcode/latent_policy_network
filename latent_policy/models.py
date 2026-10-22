@@ -22,6 +22,7 @@ class PolicyConfig:
     attention_heads: int = 4
     attention_layers: int = 1
     weight_scale: float = 0.8
+    encoder_hidden_dim: int | None = None
 
 
 def mlp(sizes: Iterable[int], activation: type[nn.Module] = nn.Tanh, last_std: float | None = None) -> nn.Sequential:
@@ -52,31 +53,32 @@ class ContextEncoder(nn.Module):
         super().__init__()
         self.cfg = cfg
         encoder = cfg.encoder
+        hidden_dim = cfg.encoder_hidden_dim if cfg.encoder_hidden_dim is not None else cfg.hidden_dim
         if encoder == "flat":
             self.kind = "flat"
-            self.net = mlp([cfg.context_len * cfg.obs_dim, cfg.hidden_dim, cfg.latent_dim])
+            self.net = mlp([cfg.context_len * cfg.obs_dim, hidden_dim, cfg.latent_dim])
         elif encoder == "mean":
             self.kind = "mean"
-            self.net = mlp([cfg.obs_dim, cfg.hidden_dim, cfg.latent_dim])
+            self.net = mlp([cfg.obs_dim, hidden_dim, cfg.latent_dim])
         elif encoder == "gru":
             self.kind = "gru"
-            self.gru = nn.GRU(cfg.obs_dim, cfg.hidden_dim, batch_first=True)
-            self.net = mlp([cfg.hidden_dim, cfg.latent_dim])
+            self.gru = nn.GRU(cfg.obs_dim, hidden_dim, batch_first=True)
+            self.net = mlp([hidden_dim, cfg.latent_dim])
         elif encoder == "attention":
             self.kind = "attention"
-            self.input = nn.Linear(cfg.obs_dim, cfg.hidden_dim)
-            self.pos = nn.Parameter(torch.zeros(1, cfg.context_len, cfg.hidden_dim))
+            self.input = nn.Linear(cfg.obs_dim, hidden_dim)
+            self.pos = nn.Parameter(torch.zeros(1, cfg.context_len, hidden_dim))
             layer = nn.TransformerEncoderLayer(
-                d_model=cfg.hidden_dim,
+                d_model=hidden_dim,
                 nhead=cfg.attention_heads,
-                dim_feedforward=cfg.hidden_dim * 2,
+                dim_feedforward=hidden_dim * 2,
                 dropout=0.0,
                 activation="gelu",
                 batch_first=True,
                 norm_first=True,
             )
             self.transformer = nn.TransformerEncoder(layer, num_layers=cfg.attention_layers)
-            self.net = mlp([cfg.hidden_dim, cfg.latent_dim])
+            self.net = mlp([hidden_dim, cfg.latent_dim])
         else:
             raise ValueError(f"unknown context encoder: {encoder}")
 
@@ -143,6 +145,25 @@ class StaticMLPPolicy(ActorCritic):
         del context
         h = self.trunk(obs)
         return self.actor(h), self.critic(h)
+
+
+class ContextMLPPolicy(ActorCritic):
+    def __init__(self, cfg: PolicyConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.encoder = ContextEncoder(cfg)
+        self.trunk = mlp([cfg.obs_dim + cfg.latent_dim, cfg.hidden_dim, cfg.hidden_dim])
+        self.actor = nn.Linear(cfg.hidden_dim, cfg.action_dim)
+        self.critic = nn.Linear(cfg.hidden_dim, 1)
+        nn.init.normal_(self.actor.weight, std=0.01)
+        nn.init.zeros_(self.actor.bias)
+        nn.init.normal_(self.critic.weight, std=1.0)
+        nn.init.zeros_(self.critic.bias)
+
+    def logits_and_value(self, obs: torch.Tensor, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        latent = self.encoder(context)
+        hidden = self.trunk(torch.cat([obs, latent], dim=-1))
+        return self.actor(hidden), self.critic(hidden)
 
 
 class HyperHeadPolicy(ActorCritic):
@@ -239,6 +260,8 @@ class FullHyperPolicy(ActorCritic):
 def build_policy(cfg: PolicyConfig) -> ActorCritic:
     if cfg.agent == "static_mlp":
         return StaticMLPPolicy(cfg)
+    if cfg.agent == "context_mlp":
+        return ContextMLPPolicy(cfg)
     if cfg.agent == "hyper_head":
         return HyperHeadPolicy(cfg)
     if cfg.agent == "film":

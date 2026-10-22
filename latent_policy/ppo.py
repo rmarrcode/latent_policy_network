@@ -23,6 +23,7 @@ from latent_policy.utils import CSVLogger, explained_variance, make_run_dir, sel
 
 @dataclass
 class PolicyOptions:
+    encoder_hidden_dim: int | None = None
     context_len: int = 16
     agent: str = "hyper_head"
     encoder: str = "gru"
@@ -117,6 +118,7 @@ def make_policy_config(cfg: TrainConfig, env: Any) -> PolicyConfig:
         agent=cfg.policy.agent,
         encoder=cfg.policy.encoder,
         hidden_dim=cfg.policy.hidden_dim,
+        encoder_hidden_dim=cfg.policy.encoder_hidden_dim,
         latent_dim=cfg.policy.latent_dim,
         generated_hidden_dim=cfg.policy.generated_hidden_dim,
         attention_heads=cfg.policy.attention_heads,
@@ -424,7 +426,7 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train generated-weight RL policies.")
     parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--agent", choices=["static_mlp", "hyper_head", "film", "full_hyper"], default=None)
+    parser.add_argument("--agent", choices=["static_mlp", "context_mlp", "hyper_head", "film", "full_hyper"], default=None)
     parser.add_argument("--encoder", choices=["flat", "mean", "gru", "attention"], default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--total-updates", type=int, default=None)

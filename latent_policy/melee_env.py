@@ -25,7 +25,7 @@ OBS_DIM = 35
 class MeleeConfig:
     backend: str = "slippi"
     data_dir: str = ""
-    dolphin_path: str = ".cache/slippi/Slippi_Online-x86_64-ExiAI.AppImage"
+    dolphin_path: str = ".cache/slippi/squashfs-root/AppRun"
     iso_path: str = ""
     character: str = "FOX"
     stage: str = "FINAL_DESTINATION"
@@ -33,6 +33,25 @@ class MeleeConfig:
     max_episode_frames: int = 600
     timeout_seconds: float = 30.0
     headless: bool = True
+
+
+def resolve_iso_path(value: str = "") -> Path:
+    value = value or os.environ.get("MELEE_ISO", "")
+    if value:
+        return Path(value).expanduser()
+    candidates = []
+    downloads = Path.home() / "Downloads"
+    for pattern in ("*.iso", "*.gcm"):
+        for candidate in downloads.glob(pattern):
+            with candidate.open("rb") as handle:
+                header = handle.read(8)
+            if header == b"GALE01\x00\x02" and candidate.stat().st_size == 1_459_978_240:
+                candidates.append(candidate)
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValueError("Multiple Melee images found in Downloads; choose one with --iso")
+    return Path("")
 
 
 def first_hit_result(previous: Any, current: Any) -> tuple[bool, float, str]:
@@ -78,7 +97,7 @@ class MeleeFirstHitEnv:
         self.state = None
         self.elapsed = 0
         self.finished = True
-        iso = Path(cfg.iso_path or os.environ.get("MELEE_ISO", "")).expanduser()
+        iso = resolve_iso_path(cfg.iso_path)
         if not iso.is_file():
             raise FileNotFoundError("Set MELEE_ISO or iso_path to your Melee NTSC 1.02 ISO.")
         with iso.open("rb") as handle:
@@ -86,6 +105,7 @@ class MeleeFirstHitEnv:
         if len(header) != 8 or header[:6] != b"GALE01" or header[7] != 2:
             raise ValueError("Expected an uncompressed Melee NTSC 1.02 ISO (GALE01, disc revision 2)")
         self.iso_path = str(iso.resolve())
+        self.cfg.iso_path = self.iso_path
         self.melee = importlib.import_module("melee")
         self.character = self.melee.Character[cfg.character.upper()]
         self.stage = self.melee.Stage[cfg.stage.upper()]
@@ -95,8 +115,6 @@ class MeleeFirstHitEnv:
         from melee.console import DolphinBuild, get_dolphin_version
 
         path = str(Path(self.cfg.dolphin_path).expanduser().resolve())
-        if path.lower().endswith(".appimage"):
-            os.environ.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
         version = get_dolphin_version(path)
         if self.cfg.headless and not version.mainline and version.build != DolphinBuild.EXI_AI:
             raise ValueError("Headless mode requires the ExiAI or headless mainline Slippi build.")
@@ -114,8 +132,7 @@ class MeleeFirstHitEnv:
             self.controllers = [self.melee.Controller(self.console, port=player_port,
                                 type=self.melee.ControllerType.STANDARD) for player_port in (1, 2)]
             self.console.run(iso_path=self.iso_path,
-                             platform="headless" if self.cfg.headless and version.mainline else None,
-                             environment_vars={"APPIMAGE_EXTRACT_AND_RUN": "1"})
+                             platform="headless" if self.cfg.headless and version.mainline else None)
             if not self.console.connect() or not all(controller.connect() for controller in self.controllers):
                 raise ConnectionError("Could not connect both libmelee controllers to Slippi Dolphin")
         except BaseException:
@@ -135,22 +152,11 @@ class MeleeFirstHitEnv:
         return np.stack([observation(self.state, side, self.elapsed, self.cfg.max_episode_frames) for side in (0, 1)])
 
     def reset(self) -> np.ndarray:
-        if self.console is None:
-            self._start()
-            self.state = self._next()
+        if self.console is not None:
+            self.close()
+        self._start()
+        self.state = self._next()
         deadline = time.monotonic() + self.cfg.timeout_seconds
-        if self._in_game(self.state):
-            counter = 0
-            while self._in_game(self.state):
-                if time.monotonic() > deadline:
-                    raise TimeoutError("Could not exit the previous first-hit bout with L+R+A+Start")
-                for controller in self.controllers:
-                    controller.release_all()
-                if counter % 30 < 2:
-                    for button in ("BUTTON_L", "BUTTON_R", "BUTTON_A", "BUTTON_START"):
-                        self.controllers[0].press_button(getattr(self.melee.Button, button))
-                self.state = self._next()
-                counter += 1
         menu_frames = 0
         while True:
             if time.monotonic() > deadline:

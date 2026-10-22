@@ -1,0 +1,46 @@
+device: auto
+total_updates: 40
+num_steps: 512
+learning_rate: 0.0003
+anneal_lr: true
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+ent_coef: 0.015
+vf_coef: 0.5
+target_kl: null
+torch_threads: 1
+
+policy:
+  agent: full_hyper
+  encoder: gru
+  encoder_hidden_dim: 64
+  context_len: 32
+  hidden_dim: 64
+  latent_dim: 64
+  generated_hidden_dim: 24
+  weight_scale: 0.8
+
+melee:
+  backend: slippi
+  dolphin_path: .cache/slippi/squashfs-root/AppRun
+  iso_path: ""
+  character: FOX
+  stage: FINAL_DESTINATION
+  frame_skip: 4
+  max_episode_frames: 600
+  timeout_seconds: 30
+  headless: true
+
+self_play:
+  agents: [static_mlp, context_mlp, film, hyper_head, full_hyper]
+  seeds: [1, 2, 3]
+  param_tolerance: 0.01
+  checkpoint_interval: 10
+  pool_size_per_agent: 4
+  opponent_bouts: 4
+  eval_games_per_side: 4
+  eval_warmup_bouts: 2
+  eval_opponents_per_checkpoint: 8
+  eval_switch_games: 4

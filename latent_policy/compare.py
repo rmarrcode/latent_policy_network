@@ -21,15 +21,20 @@ def parameter_count(cfg: PolicyConfig) -> int:
 
 
 def match_baseline(latent_cfg: PolicyConfig, tolerance: float = 0.01) -> PolicyConfig:
+    if latent_cfg.agent not in {"hyper_head", "full_hyper", "film"}:
+        raise ValueError("the latent agent must be hyper_head, full_hyper, or film")
+    baseline = replace(latent_cfg, agent="static_mlp", encoder="mean")
+    return match_parameter_budget(baseline, parameter_count(latent_cfg), tolerance)
+
+
+def match_parameter_budget(template: PolicyConfig, target: int, tolerance: float = 0.01) -> PolicyConfig:
     if not math.isfinite(tolerance) or not 0 <= tolerance <= 1:
         raise ValueError("parameter tolerance must be between 0 and 1")
-    if latent_cfg.agent == "static_mlp":
-        raise ValueError("the latent agent must be hyper_head, full_hyper, or film")
-    target = parameter_count(latent_cfg)
-    baseline = replace(latent_cfg, agent="static_mlp", encoder="mean")
+    if target <= 0:
+        raise ValueError("parameter target must be positive")
 
     def count_width(width: int) -> int:
-        return parameter_count(replace(baseline, hidden_dim=width))
+        return parameter_count(replace(template, hidden_dim=width))
 
     lower, upper = 1, 1
     while count_width(upper) < target:
@@ -46,10 +51,10 @@ def match_baseline(latent_cfg: PolicyConfig, tolerance: float = 0.01) -> PolicyC
     gap = abs(actual - target) / target
     if gap > tolerance:
         raise ValueError(
-            f"closest static_mlp has {actual:,} parameters (hidden_dim={width}), "
-            f"versus {target:,} latent parameters: gap {gap:.2%} exceeds {tolerance:.2%} tolerance"
+            f"closest {template.agent} has {actual:,} parameters (hidden_dim={width}), "
+            f"versus {target:,} target parameters: gap {gap:.2%} exceeds {tolerance:.2%} tolerance"
         )
-    return replace(baseline, hidden_dim=width)
+    return replace(template, hidden_dim=width)
 
 
 def compare(

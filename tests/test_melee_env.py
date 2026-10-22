@@ -6,6 +6,7 @@ import pytest
 from latent_policy.melee_env import (
     ACTION_NAMES, OBS_DIM, MeleeConfig, MeleeDecompEnv, MeleeFirstHitEnv,
     first_hit_result, make_melee_env, observation,
+    resolve_iso_path,
 )
 
 
@@ -112,6 +113,36 @@ def test_wrong_iso_revision_is_rejected(tmp_path):
     iso.write_bytes(b"GALE01\x00\x00")
     with pytest.raises(ValueError, match="revision 2"):
         MeleeFirstHitEnv(MeleeConfig(iso_path=str(iso)))
+
+
+def test_iso_discovery_requires_complete_supported_image(tmp_path, monkeypatch):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setattr("latent_policy.melee_env.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("MELEE_ISO", raising=False)
+    image = downloads / "Melee.iso"
+    image.write_bytes(b"GALE01\x00\x02")
+    assert resolve_iso_path() == type(image)("")
+    with image.open("r+b") as handle:
+        handle.truncate(1_459_978_240)
+    assert resolve_iso_path() == image
+    assert resolve_iso_path("/explicit/game.iso") == type(image)("/explicit/game.iso")
+
+
+def test_slippi_reset_relaunches_previous_console():
+    env = MeleeFirstHitEnv.__new__(MeleeFirstHitEnv)
+    env.cfg = MeleeConfig()
+    env.console = object()
+    events = []
+    env.close = lambda: events.append("close")
+    env._start = lambda: events.append("start")
+    env._next = lambda: state()
+    env._in_game = lambda current: True
+    env.character = SimpleNamespace(value=1)
+    env.reset()
+    assert events == ["close", "start"]
+    assert env.elapsed == 0
+    assert not env.finished
 
 
 def test_decomp_missing_data_fails_without_requesting_dolphin(tmp_path):

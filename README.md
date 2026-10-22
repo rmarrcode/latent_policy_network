@@ -52,6 +52,7 @@ Summarize any sweep:
 The sweep compares:
 
 - `static_mlp`: regular non-adaptive actor-critic baseline
+- `context_mlp`: context encoder followed by a regular MLP actor-critic with fixed learned weights
 - `hyper_head`: context network generates the actor's final linear head
 - `film`: context network modulates actor features with FiLM parameters
 - `full_hyper`: context network generates every actor-layer weight
@@ -128,7 +129,80 @@ because it launches headless game-server processes.
 
 ## Real Melee Self-Play
 
-The Melee Light browser environment has been removed. The default replacement is
+For the controlled five-model comparison, use:
+
+```bash
+bash scripts/run_melee_comparison.sh --config configs/melee_fair_self_play.yaml
+```
+
+This config runs three training seeds and compares:
+
+| Model | Parameters | Actor/trunk width | History |
+|---|---:|---:|---|
+| Static MLP | 130,167 | 332 | None; memory ablation |
+| GRU + regular MLP (`context_mlp`) | 129,955 | 270 | Same 32 observations |
+| FiLM | 130,011 | 118 | Same 32 observations |
+| Hyper-head | 128,975 | 62 | Same 32 observations |
+| Full hypernetwork | 130,247 | 64 | Same 32 observations |
+
+The primary regular-policy comparison is **GRU + MLP versus the generated-weight
+models**. All four history-aware policies use the same 64-unit GRU and 64-dimensional
+context representation, initialized identically within a seed but learned
+independently. Actor/trunk widths are selected automatically to match the full
+hypernetwork's total trainable parameter count within 1%. The static MLP is an
+additional memory ablation, not sufficient evidence for a benefit from generating
+weights. These controls match total capacity and information, not the allocation
+of parameters between actors and critics or the exact computation performed.
+
+Every model receives the same PPO decision budget, optimizer settings, seeds,
+and a common frozen opponent pool. Update order rotates across models. The pool
+is updated only after every model finishes the current update. The learner's
+history survives an unannounced opponent change; only rollout boundaries clear
+it. Controller port stays fixed within a rollout. No opponent identity or switch
+flag is supplied as policy input.
+
+Additional outputs include `inference_cost.csv` (warm batch-one action latency,
+with CUDA synchronization), rollout/optimization/cumulative training wall times
+in `training.csv`, and `training_bouts.csv`. The training metrics include rewards
+in decision-age windows 0–3, 4–15, and 16+ after a switch, plus returns from the
+first, second, and later bouts. Counts accompany each mean; sparse first-hit
+rewards make these decision-age windows a supplementary diagnostic.
+
+The fair config bounds Elo evaluation to a reproducible connected graph with
+eight opponents per saved checkpoint, equal coverage, and balanced controller
+ports. With 75 checkpoints this is 300 pairings rather than 2,775. The graph is
+chosen before matches; ratings share one fitted scale, but a checkpoint's exact
+opponents differ. Set `eval_opponents_per_checkpoint: 0` for full round-robin
+evaluation. `evaluation_plan.json` records coverage and the evaluation seed.
+
+After Elo evaluation, a separate switch test evaluates each final model against
+every architecture's final checkpoint from the next training seed. Those opponent
+weights were never in that learner's training pool. Both controller ports are
+tested. The learner first encounters a common initial reference opponent for
+two bouts, then the opponent is replaced without clearing the learner's context.
+Four scored bouts track immediate and later performance. Results go to
+`switch_bouts.csv`, `switch_summary.csv`, `switch_protocol.json`, and
+`switch_adaptation.png`. With only one training seed this test falls back to
+same-seed opponents and explicitly records that it is not a held-out-seed test.
+
+A supported conclusion would be that context-conditioned weight generation
+improves performance over a history- and parameter-matched regular policy under
+these opponent-switch conditions. It would not establish that latent policies
+are universally better. Assess all three seeds, inference/runtime costs, draw
+rates, held-out-seed performance, and Elo sampling uncertainty before claiming an
+advantage. The graph's across-seed spread is not a confidence interval.
+
+The Melee Light browser environment has been removed. The default is now
+[Slippi Dolphin + libmelee](https://github.com/vladfi1/libmelee), using the real
+Melee engine. This is the evaluation target for eventual comparisons with
+[Phillip II / Slippi-AI](https://github.com/vladfi1/slippi-ai), which uses the
+same Dolphin/libmelee state and controller interfaces. An external Phillip II
+opponent adapter is not yet implemented. When adding that comparison, record the
+model version and match character, stage, controller-port order, input delay,
+and warmup rules. First-hit scores are a custom benchmark and are not comparable
+to published full-match ratings.
+
+The optional native backend is
 [melee-sim-light](https://github.com/kyhavlov/melee-sim-light), a native C simulator
 built from the Melee decompilation with a Python API. It steps and resets directly,
 without Dolphin or menus. The simulator still requires extracted game data from
@@ -139,15 +213,15 @@ Build/install the pinned simulator, optionally extract an ISO, and train:
 
 ```bash
 bash scripts/setup_melee_decomp.sh /path/to/Melee-NTSC-1.02.iso data
-MSL_DATA_DIR="$PWD/data" bash scripts/run_melee_comparison.sh --run-dir runs/melee_decomp
+MSL_DATA_DIR="$PWD/data" bash scripts/run_melee_comparison.sh --backend decomp --run-dir runs/melee_decomp
 ```
 
 If the data is already extracted, installation needs no ISO:
 
 ```bash
 bash scripts/setup_melee_decomp.sh
-bash scripts/run_melee_comparison.sh --data-dir /path/to/extracted/data --dry-run
-bash scripts/run_melee_comparison.sh --data-dir /path/to/extracted/data --run-dir runs/melee_decomp
+bash scripts/run_melee_comparison.sh --backend decomp --data-dir /path/to/extracted/data --dry-run
+bash scripts/run_melee_comparison.sh --backend decomp --data-dir /path/to/extracted/data --run-dir runs/melee_decomp
 ```
 
 The same first-hit rules, observations, action mapping, parameter matching,
@@ -158,12 +232,10 @@ The adapter's mapping and first-hit handling are tested with a test backend;
 live gameplay validation requires extracted data. No training run should be
 reported as started merely because the simulator builds or a dry run passes.
 
-The alternative backend runs Melee through
+The default backend runs Melee through
 [libmelee](https://github.com/vladfi1/libmelee) and its documented headless ExiAI
 Dolphin build. To use that backend, install the Python adapter and pinned Linux
 x86-64 Dolphin build:
-
-Install the Python adapter and pinned Linux x86-64 Dolphin build:
 
 ```bash
 bash scripts/setup_melee.sh
@@ -174,8 +246,11 @@ bash scripts/run_melee_comparison.sh --backend slippi --run-dir runs/melee_first
 
 The setup script downloads the build linked by libmelee's maintainers, checks its
 SHA-256, and checks its version. It does not download game data. You must provide
-your Melee NTSC 1.02 ISO. The AppImage is extracted automatically when run, so FUSE
-is not required. Use `--iso` and `--dolphin` for explicit paths. The default config
+your Melee NTSC 1.02 ISO. The setup script extracts the AppImage once and uses
+`squashfs-root/AppRun`, so FUSE is not required and version parsing is unaffected
+by AppImage extraction messages. A unique complete NTSC 1.02 image in `~/Downloads`
+is discovered automatically; `MELEE_ISO` or `--iso` overrides discovery. Use
+`--dolphin` for an explicit executable path. The default config
 is `configs/melee_self_play.yaml`; `--device cpu`, `--updates 10`, and `--seeds 1`
 can shorten an experiment. `--dry-run` checks model sizes without starting Dolphin
 or requiring an ISO. Other platforms need their own compatible Slippi executable
@@ -189,16 +264,19 @@ Rules and observations:
   timeouts are draws. Hits are checked every emulated frame, even within an
   action repeat. Missing frames or emulator failures stop the experiment.
 - A fresh match starts every bout with zero damage. The native backend resets
-  directly. With Slippi, L+R+A+Start exits the previous match, then libmelee
-  selects both characters and the stage. Menu/countdown frames produce no
-  training samples.
+  directly. Slippi relaunches its isolated Dolphin process and selects both
+  characters and the stage. This avoids a verified pause/frame-stream hang when
+  trying to quit a bout with L+R+A+Start in the ExiAI build. The relaunch takes
+  about 2.2 seconds on this machine, adding substantial overhead to short bouts.
+  Menu/countdown frames produce no training samples.
 - Defaults are Fox dittos on Final Destination, four frames per decision, and
   a 600-frame (10 game-second) bout limit. The 22 discrete actions cover movement,
   jump, shield, grab, attacks, specials, and C-stick directions. The 35 features
   describe own/opponent fighter state, relative position, and bout progress.
-- Slippi reset/menu behavior still needs an end-to-end check with an actual ISO
-  on each Dolphin build. This workflow favors a small, explicit action/state interface
-  over a pretrained Melee controller.
+- The Slippi backend has been checked with the NTSC 1.02 image: repeated fresh
+  resets and a controlled first-hit scenario return the expected zero-sum
+  rewards. This workflow uses a small action/state interface; it does not
+  include a pretrained Melee controller.
 
 The comparison automatically widens `static_mlp` to match `full_hyper + gru`
 within 1% of total trainable parameters, including encoders, generators, and
@@ -210,10 +288,12 @@ Each update gives both learners the same number of environment decisions and
 PPO optimization epochs against a common frozen pool containing recent snapshots
 of both architectures. The pool changes only after both learners update. Controller
 ports are sampled during training. Opponents remain fixed for four bouts so the
-latent model can carry context across bouts; contexts reset when the opponent
-block changes and at rollout boundaries. The trainer always runs all PPO epochs
+history-aware models can carry context across bouts and opponent switches;
+contexts reset at rollout boundaries. The trainer always runs all PPO epochs
 for equal optimization budgets; `target_kl` must be null. All three seeds use the
-same hyperparameters. Completed bout counts, frames, and runtime can differ
+same hyperparameters. Defaults use 512 decisions per rollout so even no-hit
+rollouts can complete bouts before the rollout boundary. Completed bout counts,
+frames, and runtime can differ
 because policies end bouts at different times. These are short research defaults,
 not evidence of convergence.
 
@@ -227,8 +307,9 @@ Outputs in the run directory:
 - `elo_over_time.png`, `elo_over_time.svg`: checkpoint Elo against training
   decisions per learner, with mean and standard deviation across seeds.
 
-After training, every saved checkpoint plays every other checkpoint in both
-controller-port orders. Two warmup bouts precede four scored bouts per side;
+After training, saved checkpoints play either the configured balanced graph or
+the full round-robin tournament, in both controller-port orders. Two warmup bouts
+precede four scored bouts per side;
 context persists within each side's series, then resets. Actions are sampled
 with recorded reproducible pairing seeds. Warmup games do not affect scores.
 Ratings are fitted jointly with a regularized Bradley–Terry model on the Elo

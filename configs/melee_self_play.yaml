@@ -1,6 +1,6 @@
 device: auto
 total_updates: 40
-num_steps: 128
+num_steps: 512
 learning_rate: 0.0003
 anneal_lr: true
 gamma: 0.99
@@ -22,9 +22,9 @@ policy:
   weight_scale: 0.8
 
 melee:
-  backend: decomp
+  backend: slippi
   data_dir: ""
-  dolphin_path: .cache/slippi/Slippi_Online-x86_64-ExiAI.AppImage
+  dolphin_path: .cache/slippi/squashfs-root/AppRun
   iso_path: ""
   character: FOX
   stage: FINAL_DESTINATION

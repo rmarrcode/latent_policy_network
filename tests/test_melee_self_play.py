@@ -1,12 +1,14 @@
 import json
+import csv
 
 import numpy as np
 import pytest
 import torch
 
-from latent_policy.melee_elo import evaluate_checkpoints, fit_elo
+from latent_policy.melee_elo import evaluate_checkpoints, fit_elo, select_pairings
 from latent_policy.melee_env import OBS_DIM, MeleeConfig
-from latent_policy.melee_self_play import SelfPlayConfig, policy_configs, train_comparison, validate
+from latent_policy.melee_self_play import SelfPlayConfig, collect_rollout, policy_configs, train_comparison, validate
+from latent_policy.models import PolicyConfig, build_policy, count_parameters
 from latent_policy.ppo import TrainConfig
 
 
@@ -108,3 +110,84 @@ def test_pool_configuration_and_equal_optimization_budget_are_validated():
     cfg.policy.agent = "static_mlp"
     with pytest.raises(ValueError, match="latent agent"):
         policy_configs(cfg, SelfPlayConfig())
+
+
+def test_balanced_elo_graph_is_connected_and_covers_every_checkpoint():
+    pairs = select_pairings(75, 8)
+    assert len(pairs) == len(set(pairs)) == 300
+    assert all(sum(index in pair for pair in pairs) == 8 for index in range(75))
+    reached = {0}
+    for _ in range(75):
+        reached |= {other for first, second in pairs if first in reached or second in reached for other in (first, second)}
+    assert len(reached) == 75
+    assert pairs == select_pairings(75, 8)
+    assert len(select_pairings(4, 0)) == 6
+
+
+def test_learner_history_survives_hidden_opponent_switch():
+    torch.set_num_threads(1)
+    learner_cfg = PolicyConfig(obs_dim=OBS_DIM, action_dim=22, agent="context_mlp", context_len=2,
+                               hidden_dim=16, latent_dim=16)
+    learner = build_policy(learner_cfg)
+    opponents = [build_policy(learner_cfg), build_policy(learner_cfg)]
+    cfg = tiny_config()
+    cfg.num_steps = 6
+    options = SelfPlayConfig(opponent_bouts=1)
+    batch, metrics = collect_rollout(FakeDolphinEnv(MeleeConfig()), learner, opponents, cfg, options, 123)
+    assert torch.count_nonzero(batch["context"][0]) == 0
+    assert torch.count_nonzero(batch["context"][2]) > 0
+    assert torch.count_nonzero(batch["context"][4]) > 0
+    assert [record["bout_since_switch"] for record in metrics["bout_records"]] == [0, 0, 0]
+    assert len({record["port"] for record in metrics["bout_records"]}) == 1
+
+
+def test_five_arm_multi_seed_comparison_and_switch_evaluation(tmp_path, monkeypatch):
+    from latent_policy import melee_self_play
+
+    torch.set_num_threads(1)
+    cfg = tiny_config()
+    cfg.total_updates = 1
+    cfg.policy.hidden_dim = cfg.policy.latent_dim = cfg.policy.encoder_hidden_dim = 64
+    cfg.policy.generated_hidden_dim = 24
+    options = SelfPlayConfig(agents=("static_mlp", "context_mlp", "film", "hyper_head", "full_hyper"),
+                             seeds=(1, 2), checkpoint_interval=1, eval_games_per_side=1,
+                             eval_warmup_bouts=1, eval_opponents_per_checkpoint=2, eval_switch_games=2)
+    configs = policy_configs(cfg, options)
+    counts = [count_parameters(build_policy(policy_cfg)) for policy_cfg in configs]
+    assert all(abs(count - counts[-1]) / counts[-1] <= 0.01 for count in counts)
+    encoders = []
+    for policy_cfg in configs[1:]:
+        torch.manual_seed(7)
+        policy = build_policy(policy_cfg)
+        assert policy_cfg.encoder == "gru"
+        assert policy.encoder.gru.hidden_size == 64
+        encoders.append(policy.encoder.state_dict())
+    for encoder in encoders[1:]:
+        assert all(torch.equal(encoder[name], encoders[0][name]) for name in encoder)
+    recorded_pools = []
+    original = melee_self_play.collect_rollout
+
+    def record_pool(env, policy, opponents, *args):
+        recorded_pools.append([(snapshot.cfg.agent, snapshot.self_play_update) for snapshot in opponents])
+        return original(env, policy, opponents, *args)
+
+    monkeypatch.setattr(melee_self_play, "collect_rollout", record_pool)
+    manifest = train_comparison(cfg, MeleeConfig(), options, tmp_path, env_factory=FakeDolphinEnv)
+    assert len(manifest) == 20
+    assert all(pool == recorded_pools[0] for pool in recorded_pools[:5])
+    assert all(pool == recorded_pools[5] for pool in recorded_pools[5:])
+    with (tmp_path / "training.csv").open() as handle:
+        metrics = list(csv.DictReader(handle))
+    assert len(metrics) == 10
+    assert {row["agent"] for row in metrics} == set(options.agents)
+    assert all(int(row["env_steps"]) == 4 for row in metrics)
+    assert all(float(row["optimization_wall_seconds"]) > 0 for row in metrics)
+    assert (tmp_path / "inference_cost.csv").exists()
+    assert (tmp_path / "training_bouts.csv").exists()
+    evaluate_checkpoints(tmp_path, "cpu", env_factory=FakeDolphinEnv)
+    with (tmp_path / "switch_bouts.csv").open() as handle:
+        switches = list(csv.DictReader(handle))
+    assert len(switches) == 200
+    assert all(row["seed"] != row["target_seed"] for row in switches)
+    assert (tmp_path / "switch_adaptation.png").stat().st_size > 0
+    assert (tmp_path / "evaluation_plan.json").exists()
